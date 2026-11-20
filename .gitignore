@@ -5,6 +5,8 @@
 .aws/
 *.pem
 *.key
+.videa-session.json
+*.videa.json
 
 # Helyi Python-környezetek és gyorsítótárak
 .venv/

@@ -93,5 +93,44 @@ class PipelineTests(unittest.TestCase):
             (Path(tmp) / 'Daha17_25_1080p.tr.srt').write_text(SRT)
             self.assertEqual(main.run_pipeline(directory=tmp), 1)
             log = (Path(tmp) / 'pipeline.log').read_text()
-            self.assertIn('LEÁLLT | 3. Magyar fordítás', log)
+            self.assertRegex(log, r'LEÁLLT[^\n]*3\. Magyar fordítás')
             self.assertIn('Hiányzik az OPENAI_API_KEY', log)
+
+    def test_upload_is_disabled_during_default_test_run(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('main.download_video', return_value='video.mp4'), patch('main.download_subtitle', return_value='tr.srt'), patch('main.translate_episode_subtitle', return_value='hu.test600.srt'), patch('main.upload_video') as upload:
+            self.assertEqual(main.run_pipeline(directory=tmp), 0)
+            upload.assert_not_called()
+
+    def test_upload_with_partial_translation_fails_before_any_download(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('main.download_video') as video, patch('main.upload_video') as upload:
+            self.assertEqual(main.run_pipeline(directory=tmp, upload=True), 1)
+            video.assert_not_called()
+            upload.assert_not_called()
+            self.assertIn('max_batches=None', (Path(tmp) / 'pipeline.log').read_text())
+
+    def test_fourth_phase_only_runs_after_successful_full_translation(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('main.download_video', return_value='video.mp4'), patch('main.download_subtitle', return_value='tr.srt'), patch('main.translate_episode_subtitle', return_value='hu.srt') as translate, patch('main.upload_video', return_value='https://videa.hu/player?v=abcdefghijkl1234') as upload, patch('main.attach_subtitle') as attach:
+            self.assertEqual(main.run_pipeline(directory=tmp, max_batches=None, upload=True), 0)
+            self.assertIsNone(translate.call_args.kwargs['max_batches'])
+            upload.assert_called_once_with('video.mp4', title='Daha 17 – 25. rész')
+            attach.assert_called_once_with('video.mp4', 'hu.srt')
+            self.assertIn('4. Videa-feltöltés', (Path(tmp) / 'pipeline.log').read_text())
+
+    def test_translation_failure_never_uploads(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('main.download_video', return_value='video.mp4'), patch('main.download_subtitle', return_value='tr.srt'), patch('main.translate_episode_subtitle', side_effect=RuntimeError('failed')), patch('main.upload_video') as upload:
+            self.assertEqual(main.run_pipeline(directory=tmp, max_batches=None, upload=True), 1)
+            upload.assert_not_called()
+
+    def test_upload_error_is_logged_as_fourth_phase_failure(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('main.download_video', return_value='video.mp4'), patch('main.download_subtitle', return_value='tr.srt'), patch('main.translate_episode_subtitle', return_value='hu.srt'), patch('main.upload_video', side_effect=RuntimeError('Videa: HTTP 500')):
+            self.assertEqual(main.run_pipeline(directory=tmp, max_batches=None, upload=True), 1)
+            log = (Path(tmp) / 'pipeline.log').read_text()
+            self.assertIn('LEÁLLT | 4. Videa-feltöltés', log)
+            self.assertIn('HTTP 500', log)
+
+    def test_subtitle_failure_is_a_fourth_phase_failure_not_success(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('main.download_video', return_value='video.mp4'), patch('main.download_subtitle', return_value='tr.srt'), patch('main.translate_episode_subtitle', return_value='hu.srt'), patch('main.upload_video', return_value='https://videa.hu/player?v=abcdefghijkl1234'), patch('main.attach_subtitle', side_effect=RuntimeError('Felirat nem menthető')):
+            self.assertEqual(main.run_pipeline(directory=tmp, max_batches=None, upload=True), 1)
+            log = (Path(tmp) / 'pipeline.log').read_text()
+            self.assertIn('LEÁLLT | 4. Videa-feltöltés', log)
+            self.assertIn('Felirat nem menthető', log)

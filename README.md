@@ -32,7 +32,7 @@ python3 main.py
 ```
 
 A `main.py` sorrendben futtatja a videóletöltést, a török felirat letöltését,
-majd a magyar fordítást. Bármelyik lépés hibájánál azonnal leáll; a következő
+majd a magyar fordítást és az opcionális Videa-feltöltést. Bármelyik lépés hibájánál azonnal leáll; a következő
 lépés nem indul el. A kért epizódszámot az `episode` változóban állítsd be.
 Pythonból másik mappával is indítható:
 
@@ -88,8 +88,8 @@ adagokat dolgoz fel. A `main.py` a három lépés sorrendjét és a közös leá
 A jelenlegi `main.py` teszteléshez `max_batches=6` értéket ad át: csak az első
 600 forrásblokkot dolgozza fel, és `Daha17_25_1080p.hu.test600.srt` néven menti.
 A jelentés csak erre a részletre vonatkozik. A meglévő, azonos modellhez tartozó
-adagokat felhasználja. A teljes fordításhoz töröld a `max_batches=6` sort, vagy
-állítsd `None`-ra; ekkor a már kész adagokból folytatja a teljes feliratot.
+adagokat felhasználja. A teljes fordításhoz a `main.py` elején állítsd
+`max_batches = None` értékre; ekkor a már kész adagokból folytatja a teljes feliratot.
 
 A `series_memory.json` tartalmazza a jóváhagyott neveket, beceneveket,
 kapcsolatokat és a 160 szavas, a 24. rész végéig ismert történeti összefoglalót.
@@ -198,6 +198,82 @@ A letöltés után a program elutasítja az üres fájlt, majd FFmpeggel végigo
 a letöltést. Ez nagy fájlnál időbe telhet; a hibás MP4 megmarad, ezért újrapróbálás
 előtt el kell távolítani vagy át kell nevezni.
 
+## 4. fázis: Videa-feltöltés
+
+A `uploadVidea.py` az eredeti MP4-et tölti fel Playwrighttal. Utána a főprogram
+a `videaSubtitles.py` segítségével külön „Magyar” feliratként csatolja a harmadik
+fázisban készített SRT-t. A feliratot nem égeti rá a videóra. A tesztkorlát
+(`max_batches`) és a feltöltés (`upload_to_videa`) a `main.py` elején állítható;
+bekapcsolt feltöltéshez teljes fordítás szükséges (`max_batches = None`).
+
+Elsőként mentsd el a bejelentkezést egy látható böngészőben:
+
+```bash
+python3 uploadVidea.py --login
+```
+
+Ez csak bejelentkezik, fájlt nem választ ki és nem tölt fel. A munkamenet a
+Gitből kizárt, csak a tulajdonos számára olvasható `.videa-session.json` fájlba
+kerül. Lejárt munkamenetnél ismételd meg. Alternatívaként a `.env` fájlban
+`VIDEA_EMAIL` és `VIDEA_PASSWORD` adható meg; valódi adatokat ne írj a kódba.
+CAPTCHA vagy egyéb kézi belépési lépés esetén használd a `--login` módot.
+
+A teljes folyamat és a feltöltés engedélyezéséhez a `main.py` elején:
+
+```python
+max_batches = None
+upload_to_videa = True
+```
+
+Ekkor csak sikeres teljes fordítás után indul a negyedik lépés. A cím
+`Daha 17 – <epizódszám>. rész`, a leírás alapból üres. A tartalomtípus a normál
+Videa (`0`), a kategóriát `film/animáció` név alapján választja. A rögzített
+próbakód `1` és `16` értékei VideaKid/Animáció feltöltést eredményeznének.
+A felület többi
+alapértéke, köztük a láthatóság, megmarad. A feltételek jelölőnégyzetét a
+rögzített folyamatnak megfelelően elfogadja, a fizetett promóciót „nem”-re állítja.
+
+A feltöltő önállóan is meghívható; **ez tényleges feltöltést és adatlapmentést végez**:
+
+```bash
+python3 uploadVidea.py --video sajat_tesztvideo.mp4 --title "Teszt" --description "Tesztfeltöltés"
+```
+
+Már feltöltött videóhoz csak a magyar SRT is csatolható, új MP4-átvitel nélkül:
+
+```bash
+python3 videaSubtitles.py Daha17_25_1080p.mp4 Daha17_25_1080p.hu.srt
+```
+
+A parancs a videó melletti `.videa.json` mentésből veszi a videóazonosítót.
+A helyi és a Videa szerveres SRT-ellenőrzése után menti a feliratot. A sikeres
+feliratazonosítót és a feliratszöveg lenyomatát is megőrzi: ugyanazt a feliratot
+nem csatolja ismét. Eltérő vagy bizonytalan korábbi feliratmentésnél megáll;
+nem ír felül és nem hoz létre automatikusan második „Magyar” feliratot.
+Ehhez a Videa saját felületének `validateVideoSubtitleByRequest` és
+`addVideoSubtitleByRequest` kéréseit használja a mentett bejelentkezéssel;
+OpenAI API-hívást és videófeltöltést nem indít.
+
+Alapból látható böngészőt használ. A `--headless` elrejti, a `--timeout 7200`
+a fájlátvitel felső időkorlátja másodpercben. A méret- és időkorlátokat a
+bejelentkezett fiók tényleges feltöltőoldalából olvassa ki. Nagy fájlnál az
+időtartamot `ffprobe` segítségével ellenőrzi.
+
+A fájlátvitel szerveres visszaigazolását és az adatlap mentését külön várja meg.
+A visszaigazolások értelmezése a Videa [nyilvános feltöltőkódjára](https://videa.hu/static/uis/redesign/js/pages/upload.js)
+épül. Ha a böngésző nem tudja átvenni a mentési választ, kizárólag olvasással
+ellenőrzi a konkrét videóazonosítót a saját videólistában. Csak a megtalált
+hivatkozás alapján jelöl sikert; a mentést és a fájlátvitelt nem ismétli meg.
+A sikeres mentés nem jelenti azt, hogy a Videa videókonvertálása is véget ért.
+Az éles, bejelentkezett feltöltési folyamatot még ellenőrizni kell; a tesztek
+nem publikálnak videót.
+
+A videó melletti `.videa.json` fájlban megmarad az állapot és a kapott hivatkozás.
+Sikeres korábbi feltöltésnél nem küldi újra a fájlt. Félbeszakadt vagy bizonytalan
+kísérletnél leáll: először ellenőrizd a saját Videa-videólistádat, és csak azután
+töröld vagy egyeztesd a mentést. Ezzel elkerülhető a duplikált publikálás.
+A negyedik lépés eredménye és hibája is a közös `pipeline.log` fájlba kerül.
+
 ## Tesztek
 
 ```bash
@@ -209,7 +285,7 @@ egy rövid helyi tesztvideót állítanak elő; ez a teszt FFmpeg nélkül kimar
 
 ## Fájlok
 
-- `main.py`: a három lépés vezérlése, leállás és időbélyeges naplózás.
+- `main.py`: a három alaplépés és az opcionális Videa-feltöltés vezérlése, naplózás.
 - `downloader.py`: ellenőrzések, Dailymotion FHD cím kinyerése, videóletöltés és hibakezelés.
 - `downloadSubtitle.py`: a török SRT felirat közvetlen CDN-letöltése.
 - `subtitleTranslation.py`: memóriába olvasás, 100 blokkonkénti API-fordítás és magyar SRT mentése.
@@ -222,3 +298,7 @@ egy rövid helyi tesztvideót állítanak elő; ez a teszt FFmpeg nélkül kimar
 - `test_subtitleTranslation.py`: adagolás, fordítási válaszok és API-hibák tesztjei, fizetős hívás nélkül.
 - `test_downloader.py`, `test_downloadSubtitle.py`: videó- és feliratletöltési tesztek.
 - `test_main.py`: sorrend, leállás, naplózás és újraindítás hálózat nélkül.
+- `uploadVidea.py`: böngészős Videa-belépés, feltöltés és állapotmentés.
+- `test_uploadVidea.py`: feltöltés és duplikálás elleni védelem hamis böngészővel.
+- `videaSubtitles.py`: SRT csatolása meglévő videóhoz, külön MP4-átvitel nélkül.
+- `test_videaSubtitles.py`: feliratmentés, hiba és újraindítás hálózat nélküli tesztjei.
