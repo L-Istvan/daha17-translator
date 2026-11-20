@@ -1,11 +1,10 @@
-"""Fordítás, külön kihagyásellenőrzés és célzott olvashatósági javítás.
+"""Feliratfordítás API-hívással, helyi válaszmentéssel.
 
 A stabil developer-prefix minden kérésben tartalmazza a sorozatmemóriát.
 A sikeres válaszok tartalomlenyomattal helyben is megmaradnak. A JSONL napló
 csak mérési adatokat tárol: API-kulcsot, promptot és feliratszöveget nem.
 """
 
-from dataclasses import asdict
 import json
 from pathlib import Path
 import re
@@ -13,7 +12,6 @@ import time
 
 import requests
 
-from subtitleQuality import readability
 from translationStorage import atomic_json, digest, log_event
 
 
@@ -101,9 +99,12 @@ class OpenAISubtitleTranslator:
         return text
 
     def discard_invalid_response(self):
-        # Formailag hibás válasz ne ragassza ugyanabba a hibába a következő futást.
-        if self.last_response_path is not None:
-            self.last_response_path.unlink(missing_ok=True)
+        # Ne használjuk újra, de maradjon meg a már kifizetett válasz hibakereséshez.
+        if self.last_response_path is not None and self.last_response_path.exists():
+            invalid = self.last_response_path.with_name(
+                f'{self.last_response_path.stem}.{time.time_ns()}.invalid.json')
+            self.last_response_path.rename(invalid)
+            return invalid
 
     @staticmethod
     def extract_text(payload):
@@ -142,83 +143,13 @@ class OpenAISubtitleTranslator:
                   + f'Az új fordítás kezdősorszáma: {start_number}.\n'
                   + '\nFORDÍTANDÓ ÚJ RÉSZLET – csak ezt fordítsd:\n' + format_subtitle(blocks))
         try:
-            result = parse_subtitle(self.request('translate', prompt), allow_empty=True)
-            validate_translation(result, blocks, start_number)
+            result = parse_subtitle(self.request('translate', prompt), allow_empty=True, allow_empty_blocks=True)
+            validate_translation(result, blocks, start_number, allow_empty_text=True)
+            # Az üres blokkok kimaradnak; a helyi jelentés listázza a kihagyásokat.
+            result = [type(b)(str(start_number + i), b.timing, b.text)
+                      for i, b in enumerate(b for b in result if b.text.strip())]
             return result
         except ValueError as error:
-            self.discard_invalid_response()
-            raise RuntimeError('Hibás fordítási SRT-válasz.') from error
-
-    def refine_batch(self, source, translated, *, context, lookahead, start_number):
-        """Minden kihagyást külön auditál, majd csak a problémás szövegeket javítja."""
-        from subtitleTranslation import SubtitleBlock, format_subtitle, parse_subtitle, validate_translation, matched_indices
-        kept = dict(zip(matched_indices(translated, source), translated))
-        missing = [i for i in range(len(source)) if i not in kept]
-        audits = []
-        if missing:
-            # A forráskörnyezet teljes, de válasz csak a kihagyott indexekről kérhető.
-            prompt = (self.background(context, lookahead) + '\n\nKÜLÖN KIHAGYÁSELLENŐRZÉS\n'
-                      'Csak az alábbi kihagyott source_index értékeket vizsgáld. '
-                      'A kizárólag hangjelzéses blokkok és dalszövegek omit döntést kaphatnak. '
-                      'Beszéd, belső monológ, telefonbeszéd és stáblista esetén keep szükséges. '
-                      'Vegyes blokkban a beszédet tartsd meg. Bizonytalanságnál uncertain. '
-                      'A korábbi kihagyást ne tekintsd bizonyítéknak.\n'
-                      'Ebben az ellenőrzési feladatban az SRT-kimenet helyett kizárólag JSON-t adj: '
-                      '{"decisions":[{"source_index":0,"action":"keep|omit|uncertain",'
-                      '"reason":"indok", "translation":"magyar beszéd keep esetén, különben üres"}]}. '
-                      'Minden kért index pontosan egyszer szerepeljen.\n'
-                      + 'Kihagyott indexek: ' + json.dumps(missing)
-                      + '\nFORRÁSKÖRNYEZET:\n' + json.dumps([{'source_index': i, **asdict(b)} for i, b in enumerate(source)], ensure_ascii=False)
-                      + '\nEDDIGI MAGYAR FORDÍTÁS:\n' + format_subtitle(translated))
-            try:
-                rows = json.loads(self.request('review_omissions', prompt))['decisions']
-                if not isinstance(rows, list) or len(rows) != len(missing):
-                    raise ValueError('Hiányos kihagyásellenőrzés.')
-                seen = set()
-                for row in rows:
-                    i = row['source_index']
-                    if type(i) is not int or i not in missing or i in seen:
-                        raise ValueError('Hibás kihagyásazonosító.')
-                    seen.add(i)
-                    action, reason, text = row['action'], row['reason'], row['translation']
-                    if action not in ('keep', 'omit', 'uncertain') or not isinstance(reason, str) or not reason.strip() or not isinstance(text, str):
-                        raise ValueError('Hibás kihagyásdöntés.')
-                    if action == 'uncertain':
-                        raise ValueError(f'Bizonytalan kihagyás: {source[i].number}. forrásblokk.')
-                    if action == 'keep':
-                        candidate = parse_subtitle(f'1\n{source[i].timing}\n{text}')
-                        if len(candidate) != 1:
-                            raise ValueError('A pótlásnak egy blokkot kell tartalmaznia.')
-                        kept[i] = candidate[0]
-                    elif text.strip():
-                        raise ValueError('Kihagyott blokkhoz nem tartozhat fordítás.')
-                    audits.append({'source_index': i, 'source_number': source[i].number,
-                                   'timing': source[i].timing, 'action': action, 'reason': reason})
-            except (ValueError, KeyError, TypeError) as error:
-                self.discard_invalid_response()
-                raise RuntimeError(f'A kihagyásellenőrzés nem fogadható el: {error}') from error
-        ordered = sorted(kept)
-        result = [SubtitleBlock(str(start_number + j), source[i].timing, kept[i].text) for j, i in enumerate(ordered)]
-        problem_positions = [j for j, b in enumerate(result) if readability(b)['warnings']]
-        if problem_positions:
-            neighbours = sorted({k for j in problem_positions for k in range(max(0, j - 2), min(len(result), j + 3))})
-            targets = [result[j] for j in problem_positions]
-            prompt = (self.background(context, lookahead) + '\n\nCÉLZOTT OLVASHATÓSÁGI JAVÍTÁS\n'
-                      'Kizárólag a JAVÍTANDÓ blokkokat add vissza magyar SRT-ként. '
-                      'Ne változtasd a sorszámokat és időzítéseket, ne hagyj ki és ne adj hozzá blokkot. '
-                      'Természetesen tömöríts és tördeld, de a jelentés, tagadás, érzelem és szándék fontosabb a határértéknél. '
-                      'A környezetet ne másold a válaszba.\nJAVÍTANDÓ:\n' + format_subtitle(targets)
-                      + '\nMÉRÉSEK:\n' + json.dumps([readability(b) for b in targets], ensure_ascii=False)
-                      + '\nKÖRNYEZŐ TÖRÖK–MAGYAR PÁROK:\n'
-                      + json.dumps([{'source': asdict(source[ordered[j]]), 'target': asdict(result[j])} for j in neighbours], ensure_ascii=False))
-            try:
-                repairs = parse_subtitle(self.request('repair_readability', prompt))
-                if len(repairs) != len(targets) or any((a.number, a.timing) != (b.number, b.timing) for a, b in zip(repairs, targets)):
-                    raise ValueError('A javítás módosította a blokkok számát vagy időzítését.')
-            except ValueError as error:
-                self.discard_invalid_response()
-                raise RuntimeError(str(error)) from error
-            for position, repair in zip(problem_positions, repairs):
-                result[position] = repair
-        validate_translation(result, source, start_number)
-        return result, audits
+            invalid = self.discard_invalid_response()
+            saved = f' Hibás válasz mentése: {invalid}' if invalid else ''
+            raise RuntimeError(f'Hibás fordítási SRT-válasz: {error}{saved}') from error

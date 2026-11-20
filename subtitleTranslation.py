@@ -2,7 +2,7 @@
 
 A teljes forrás memóriába kerül. Minden kérés megkapja az állandó sorozatmemóriát,
 az utolsó tíz megtartott blokk török–magyar párját és öt török blokk előretekintést.
-A fordítást külön kihagyásellenőrzés és célzott olvashatósági javítás követi.
+A fordítást helyi szerkezeti és olvashatósági ellenőrzés követi, új API-hívás nélkül.
 A magyar számozás a megtartott blokkokat követi; az időzítések változatlanok.
 A sikeres lépések és adagok mentődnek, a végleges SRT csak teljes siker után.
 Az API, a sorozatmemória és a tárolás külön modulban van; a main.py csak hív.
@@ -81,7 +81,7 @@ class SubtitleBlock:
     text: str
 
 
-def parse_subtitle(text, *, allow_empty=False):
+def parse_subtitle(text, *, allow_empty=False, allow_empty_blocks=False):
     """SRT szöveg ellenőrzése és blokkokra bontása, a szövegsorok megőrzésével."""
     text = text.removeprefix('\ufeff').replace('\r\n', '\n').replace('\r', '\n').strip()
     if not text:
@@ -93,7 +93,7 @@ def parse_subtitle(text, *, allow_empty=False):
     blocks = []
     for raw in re.split(r'\n[ \t]*\n', text):
         lines = raw.splitlines()
-        if (len(lines) < 3 or not lines[0].isdigit() or
+        if (len(lines) < (2 if allow_empty_blocks else 3) or not lines[0].isdigit() or
                 not re.fullmatch(r'\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}(?: .*)?', lines[1])):
             raise ValueError(f'Hibás SRT blokk: {len(blocks) + 1}')
         duration_seconds(lines[1])
@@ -121,19 +121,22 @@ def subtitle_batches(blocks, batch_size=100):
         yield blocks[start:start + batch_size]
 
 
-def validate_translation(result, source, start_number):
+def validate_translation(result, source, start_number, *, allow_empty_text=False):
     """Csak az új forrás időzítéseinek sorrendtartó részhalmazát fogadja el."""
     if not isinstance(result, list) or any(not isinstance(b, SubtitleBlock) for b in result):
         raise ValueError('A fordító eredménye SRT blokkok listája legyen.')
     cursor = 0
     for number, block in enumerate(result, start_number):
-        if block.number != str(number) or not block.text.strip():
-            raise ValueError('Hibás magyar sorszámozás vagy üres fordítás.')
+        if block.number != str(number):
+            raise ValueError(f'Hibás magyar sorszámozás: várt {number}, kapott {block.number}.')
+        if not allow_empty_text and not block.text.strip():
+            raise ValueError(f'Üres fordítás a(z) {number}. magyar blokkban.')
         duration_seconds(block.timing)
         while cursor < len(source) and source[cursor].timing != block.timing:
             cursor += 1
         if cursor == len(source):
-            raise ValueError('Módosított, ismételt vagy nem az új adaghoz tartozó időzítés.')
+            raise ValueError(f'Módosított, ismételt vagy nem az új adaghoz tartozó időzítés '
+                             f'a(z) {number}. magyar blokkban: {block.timing}')
         cursor += 1
 
 
@@ -171,7 +174,7 @@ def _save_batch(path, request_hash, result, audits):
 
 def translate_subtitle(*, source, destination, translator, batch_size=100,
                        start_number=1, context_blocks=10, lookahead_blocks=5,
-                       checkpoint_key=None):
+                       checkpoint_key=None, max_batches=None):
     """Fordítás páros előzménnyel, előretekintéssel és ellenőrzött adag mentéssel.
 
     Saját fordítónál checkpoint_key adható a fordítási logika verziójaként.
@@ -181,35 +184,41 @@ def translate_subtitle(*, source, destination, translator, batch_size=100,
     for value, label in ((start_number, 'A kezdősorszám'), (context_blocks, 'Az előzmény mérete'),
                          (batch_size, 'Az adagméret'), (lookahead_blocks, 'Az előretekintés mérete')):
         _positive_integer(value, label)
+    if max_batches is not None:
+        _positive_integer(max_batches, 'Az adagok felső határa')
     destination = Path(destination).expanduser()
+    storage_destination = destination
+    if max_batches is not None:
+        destination = destination.with_suffix(f'.test{max_batches * batch_size}.srt')
     if destination.exists():
         raise FileExistsError(f'A célfájl már létezik: {destination}')
     report_path = destination.with_suffix('.review.json')
     if report_path.exists():
         raise FileExistsError(f'Az ellenőrzési jelentés már létezik: {report_path}')
     blocks = load_subtitle(source)
+    limit = len(blocks) if max_batches is None else min(len(blocks), max_batches * batch_size)
     if len({b.timing for b in blocks}) != len(blocks):
         raise ValueError('Azonos időzítésű forrásblokkok: a párosítás nem lenne egyértelmű.')
     identity = getattr(translator, 'checkpoint_identity', None)
     if not isinstance(identity, dict):
         identity = {'custom_translator': checkpoint_key} if checkpoint_key else None
     run_dir = None
-    log_path = destination.with_suffix('.usage.jsonl')
+    log_path = storage_destination.with_suffix('.usage.jsonl')
     if identity is not None:
         fingerprint = digest({'source': [asdict(b) for b in blocks], 'translator': identity,
                               'batch_size': batch_size, 'start_number': start_number,
                               'context_blocks': context_blocks, 'lookahead_blocks': lookahead_blocks})
-        run_dir = destination.with_suffix('.checkpoints') / fingerprint
+        run_dir = storage_destination.with_suffix('.checkpoints') / fingerprint
         run_dir.mkdir(parents=True, exist_ok=True)
         if callable(getattr(type(translator), 'configure_storage', None)):
             translator.configure_storage(run_dir, log_path)
     translated, pairs, all_audits = [], [], []
-    for start, batch in enumerate(subtitle_batches(blocks, batch_size)):
+    for start, batch in enumerate(subtitle_batches(blocks[:limit], batch_size)):
         first = start * batch_size
         lookahead = blocks[first + len(batch):first + len(batch) + lookahead_blocks]
         context = pairs[-context_blocks:]
         next_number = start_number + len(translated)
-        print(f'Felirat fordítása: {first + 1}–{first + len(batch)} / {len(blocks)} forrásblokk', flush=True)
+        print(f'Felirat fordítása: {first + 1}–{first + len(batch)} / {limit} forrásblokk', flush=True)
         request_hash = digest({'batch': [asdict(b) for b in batch],
                                'context': [asdict(pair) for pair in context],
                                'lookahead': [asdict(b) for b in lookahead], 'next_number': next_number})
@@ -230,10 +239,6 @@ def translate_subtitle(*, source, destination, translator, batch_size=100,
                     _save_batch(initial, request_hash, result, [])
             validate_translation(result, batch, next_number)
             audits = []
-            if callable(getattr(type(translator), 'refine_batch', None)):
-                result, audits = translator.refine_batch(batch, result, context=context,
-                                                       lookahead=lookahead, start_number=next_number)
-            validate_translation(result, batch, next_number)
             if complete is not None:
                 _save_batch(complete, request_hash, result, audits)
         indices = matched_indices(result, batch)
@@ -243,10 +248,13 @@ def translate_subtitle(*, source, destination, translator, batch_size=100,
         log_event(log_path, event='batch_complete', source_first=first + 1,
                   source_count=len(batch), translated_count=len(result), checkpoint_reused=resumed,
                   elapsed_seconds=time.monotonic() - batch_started)
-    report = quality_report(blocks, translated)
+    report = quality_report(blocks[:limit], translated)
+    if max_batches is not None:
+        report['total_source_blocks'] = len(blocks)
+        report['is_partial'] = limit < len(blocks)
     report['omission_audits'] = all_audits
     report['series_memory_status'] = getattr(translator, 'memory', {}).get('status') if isinstance(getattr(translator, 'memory', None), dict) else None
-    report['semantic_completeness_verified'] = False  # Az API-audit sem emberi garancia.
+    report['semantic_completeness_verified'] = False
     created = []
     try:
         with report_path.open('x', encoding='utf-8') as file:
@@ -261,7 +269,8 @@ def translate_subtitle(*, source, destination, translator, batch_size=100,
             path.unlink(missing_ok=True)
         raise
     log_event(log_path, event='run_complete', elapsed_seconds=time.monotonic() - started,
-              source_blocks=len(blocks), translated_blocks=len(translated), status=report['status'])
+              source_blocks=limit, translated_blocks=len(translated), status=report['status'],
+              is_partial=limit < len(blocks))
     print(f'Ellenőrzési jelentés: {report_path}')
     if report['status'] == 'needs_review':
         print(f'Felülvizsgálat szükséges: {len(report["omitted_blocks"])} kihagyott forrásblokk, '
@@ -270,7 +279,7 @@ def translate_subtitle(*, source, destination, translator, batch_size=100,
 
 
 def openai_translator(*, model, memory_path=DEFAULT_MEMORY_PATH, cache_policy='auto', log_path=None):
-    """Sorozatmemóriával, mérési naplóval és célzott javítással dolgozó API-fordító."""
+    """Sorozatmemóriával és mérési naplóval dolgozó API-fordító."""
     from dotenv import load_dotenv
     from subtitleApi import OpenAISubtitleTranslator
     load_dotenv(Path(__file__).resolve().parent / '.env', override=False)
@@ -280,6 +289,8 @@ def openai_translator(*, model, memory_path=DEFAULT_MEMORY_PATH, cache_policy='a
     memory = load_series_memory(memory_path)
     if memory['status'] != 'ready':
         print('A sorozatmemória még vázlatos; hiányos háttérrel készül a fordítás.', file=sys.stderr)
+    # A prefix változatlan marad a már kifizetett válaszok és adagok újrahasználásához.
+    # A korábbi ellenőrzési feladatokra már nem indítunk API-hívást.
     instructions = TRANSLATION_INSTRUCTIONS + (
         '\nKÜLÖN ELLENŐRZÉSI FELADATOK: kihagyásellenőrzésnél a kérésben megadott JSON-sémát kövesd; '
         'olvashatósági javításnál csak a kért blokkok SRT-jét add vissza. '
@@ -291,7 +302,8 @@ def openai_translator(*, model, memory_path=DEFAULT_MEMORY_PATH, cache_policy='a
 
 def translate_episode_subtitle(*, episode, directory, model, batch_size=100,
                                start_number=1, context_blocks=10, lookahead_blocks=5,
-                               memory_path=DEFAULT_MEMORY_PATH, cache_policy='auto'):
+                               memory_path=DEFAULT_MEMORY_PATH, cache_policy='auto', max_batches=None,
+                               raise_errors=False):
     """Paraméterezhető belépési pont. Félbeszakadás után a mentett adagokból folytat."""
     started = time.monotonic()
     run_log = None
@@ -309,22 +321,32 @@ def translate_episode_subtitle(*, episode, directory, model, batch_size=100,
         source = directory / f'Daha17_{episode}_1080p.tr.srt'
         destination = directory / f'Daha17_{episode}_1080p.hu.srt'
         run_log = destination.with_suffix('.usage.jsonl')
-        if destination.exists():
-            print(f'A magyar felirat már létezik, kihagyva: {destination}')
-            return destination
+        output = destination
+        if max_batches is not None:
+            _positive_integer(max_batches, 'Az adagok felső határa')
+            _positive_integer(batch_size, 'Az adagméret')
+            output = destination.with_suffix(f'.test{max_batches * batch_size}.srt')
+        if output.exists():
+            load_subtitle(output)
+            print(f'A magyar felirat már létezik, kihagyva: {output}')
+            return output
         if not source.is_file():
             raise ValueError(f'Nem található a török felirat: {source}')
         result = translate_subtitle(source=source, destination=destination,
             translator=openai_translator(model=model, memory_path=memory_path, cache_policy=cache_policy),
             batch_size=batch_size, start_number=start_number, context_blocks=context_blocks,
-            lookahead_blocks=lookahead_blocks)
+            lookahead_blocks=lookahead_blocks, max_batches=max_batches)
         print(f'Magyar felirat elkészült, az ellenőrzési jelentéssel együtt: {result}')
         return result
     except KeyboardInterrupt:
         log_failure('KeyboardInterrupt')
+        if raise_errors:
+            raise
         print('\nFordítás megszakítva; a mentett adagok megmaradtak.', file=sys.stderr)
         raise SystemExit(130)
     except (OSError, ValueError, RuntimeError, KeyError, TypeError, requests.RequestException) as error:
         log_failure(type(error).__name__)
+        if raise_errors:
+            raise
         print(f'A felirat fordítása sikertelen: {error}', file=sys.stderr)
         return None

@@ -1,4 +1,4 @@
-"""A több lépéses fordítás és a folytatás tesztjei, valódi API-költség nélkül."""
+"""A fordítás, a helyi ellenőrzés és a folytatás tesztjei, valódi API-költség nélkül."""
 
 from dataclasses import replace
 import json
@@ -23,7 +23,36 @@ def response(text):
 class TranslationPipelineTests(unittest.TestCase):
     def translator(self, **kwargs):
         with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-secret'}):
-            return t.openai_translator(model='gpt-6.2-astra', **kwargs)
+            return t.openai_translator(model='gpt-6-sol', **kwargs)
+
+    def test_invalid_numbering_preserves_response_and_does_not_reuse_it(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('requests.post') as post:
+            translator = self.translator()
+            translator.configure_storage(tmp, Path(tmp) / 'usage.jsonl')
+            source = blocks(1)
+            wrong = t.format_subtitle([replace(source[0], number='1')])
+            valid = t.format_subtitle([replace(source[0], number='80')])
+            post.return_value.json.side_effect = [response(wrong), response(valid)]
+            with self.assertRaisesRegex(RuntimeError, 'várt 80, kapott 1'):
+                translator(source, start_number=80)
+            invalid = list((Path(tmp) / 'requests').glob('*.invalid.json'))
+            self.assertEqual(len(invalid), 1)
+            self.assertEqual(json.loads(invalid[0].read_text())['payload'], response(wrong))
+            self.assertFalse(translator.last_response_path.exists())
+            self.assertEqual(post.call_count, 1)  # Nincs automatikus fizetős újrapróbálás.
+            self.assertEqual(translator(source, start_number=80)[0].number, '80')
+            self.assertEqual(post.call_count, 2)
+
+    def test_empty_output_block_is_omitted_without_extra_api_call(self):
+        source = blocks(2)
+        empty = f'80\n{source[0].timing}\n\n81\n{source[1].timing}\nSzia!'
+        translator = self.translator()
+        with patch('requests.post') as post:
+            post.return_value.json.return_value = response(empty)
+            translated = translator(source, start_number=80)
+            self.assertEqual([b.number for b in translated], ['80'])
+            self.assertEqual(translated[0].timing, source[1].timing)
+            post.assert_called_once()
 
     def test_verified_memory_has_160_word_summary_and_known_relationships(self):
         memory = load_series_memory()
@@ -44,12 +73,12 @@ class TranslationPipelineTests(unittest.TestCase):
                     load_series_memory(path)
 
     def test_cache_settings_follow_model_family(self):
-        modern, explicit = cache_configuration('gpt-6.2-astra')
+        modern, explicit = cache_configuration('gpt-6-sol')
         self.assertTrue(explicit)
         self.assertEqual(modern['prompt_cache_options'], {'mode': 'explicit', 'ttl': '30m'})
         self.assertEqual(cache_configuration('gpt-4.1')[0], {})
         self.assertEqual(cache_configuration('gpt-4.1', '24h')[0], {'prompt_cache_retention': '24h'})
-        for model, policy in (('gpt-6.2-astra', '24h'), ('gpt-4.1', '30m')):
+        for model, policy in (('gpt-6-sol', '24h'), ('gpt-4.1', '30m')):
             with self.assertRaises(ValueError):
                 cache_configuration(model, policy)
 
@@ -70,53 +99,13 @@ class TranslationPipelineTests(unittest.TestCase):
             self.assertIn(t.format_subtitle(source[1:6]), prompt)
             self.assertNotIn('instructions', first)
 
-    def test_omitted_speech_restored_and_sound_omission_audited(self):
-        translator = self.translator()
-        source = blocks(3)
-        original_translation = [replace(source[0], number='10', text='Szia')]
-        decisions = {'decisions': [
-            {'source_index': 1, 'action': 'keep', 'reason': 'Beszéd, nem hangjelzés.', 'translation': 'Ne menj!'},
-            {'source_index': 2, 'action': 'omit', 'reason': 'Csak zene.', 'translation': ''}]}
-        with patch.object(translator, 'request', return_value=json.dumps(decisions)) as request:
-            result, audits = translator.refine_batch(source, original_translation, context=[], lookahead=[], start_number=10)
-            self.assertEqual([b.number for b in result], ['10', '11'])
-            self.assertEqual(result[1].text, 'Ne menj!')
-            self.assertEqual(result[1].timing, source[1].timing)
-            self.assertEqual([a['action'] for a in audits], ['keep', 'omit'])
-            self.assertEqual(request.call_args.args[0], 'review_omissions')
 
-    def test_uncertain_or_missing_omission_decision_is_rejected(self):
-        translator = self.translator()
-        decisions = [[], [{'source_index': 0, 'action': 'uncertain', 'reason': 'Nem biztos.', 'translation': ''}]]
-        for rows in decisions:
-            with self.subTest(rows=rows), patch.object(translator, 'request', return_value=json.dumps({'decisions': rows})):
-                with self.assertRaises(RuntimeError):
-                    translator.refine_batch(blocks(1), [], context=[], lookahead=[], start_number=1)
 
-    def test_only_problematic_blocks_are_repaired(self):
-        translator = self.translator()
-        source = blocks(3)
-        translated = keep_all(source, context=[], start_number=1)
-        translated[1] = replace(translated[1], text='x' * 50)
-        repair = replace(translated[1], text='Rövid.')
-        with patch.object(translator, 'request', return_value=t.format_subtitle([repair])) as request:
-            result, audits = translator.refine_batch(source, translated, context=[], lookahead=[], start_number=1)
-            self.assertEqual(result, [translated[0], repair, translated[2]])
-            self.assertEqual(audits, [])
-            self.assertEqual(request.call_args.args[0], 'repair_readability')
-            prompt = request.call_args.args[1]
-            target = prompt.split('JAVÍTANDÓ:\n')[1].split('\nMÉRÉSEK:')[0]
-            self.assertEqual(t.parse_subtitle(target), [translated[1]])
-            self.assertIn('KÖRNYEZŐ TÖRÖK–MAGYAR PÁROK', prompt)
 
-    def test_repair_cannot_drop_or_retime_blocks(self):
-        translator = self.translator()
-        source = blocks(1)
-        translated = [replace(source[0], text='x' * 50)]
-        wrong = replace(translated[0], timing='00:01:00,000 --> 00:01:01,000')
-        with patch.object(translator, 'request', return_value=t.format_subtitle([wrong])):
-            with self.assertRaises(RuntimeError):
-                translator.refine_batch(source, translated, context=[], lookahead=[], start_number=1)
+
+
+
+
 
     def test_resume_reuses_completed_batch_and_restores_paired_context(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -134,25 +123,63 @@ class TranslationPipelineTests(unittest.TestCase):
             self.assertEqual(resumed.call_args_list[0].kwargs['context'][0].source, original[90])
             self.assertEqual(len(t.load_subtitle(destination)), 201)
 
-    def test_initial_translation_saved_when_refinement_fails(self):
+    def test_six_batch_limit_writes_partial_output_and_full_run_reuses_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, destination = Path(tmp) / 'tr.srt', Path(tmp) / 'hu.srt'
+            original = blocks(605)
+            source.write_text(t.format_subtitle(original))
+            translator = MagicMock(side_effect=keep_all)
+            output = t.translate_subtitle(source=source, destination=destination,
+                translator=translator, max_batches=6, checkpoint_key='limit-test')
+            self.assertEqual(output.name, 'hu.test600.srt')
+            self.assertFalse(destination.exists())
+            self.assertEqual(translator.call_count, 6)
+            self.assertEqual(len(t.load_subtitle(output)), 600)
+            self.assertEqual(translator.call_args.kwargs['lookahead'], original[600:605])
+            report = json.loads(output.with_suffix('.review.json').read_text())
+            self.assertEqual(report['source_blocks'], 600)
+            self.assertEqual(report['total_source_blocks'], 605)
+            self.assertTrue(report['is_partial'])
+            self.assertEqual(report['omitted_blocks'], [])
+            resumed = MagicMock(side_effect=keep_all)
+            t.translate_subtitle(source=source, destination=destination,
+                translator=resumed, checkpoint_key='limit-test')
+            resumed.assert_called_once()
+            self.assertEqual(resumed.call_args.args[0], original[600:605])
+            self.assertEqual(resumed.call_args.kwargs['start_number'], 601)
+            self.assertEqual(len(t.load_subtitle(destination)), 605)
+
+    def test_entrypoint_skips_existing_test_output_without_api_setup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / 'Daha17_25_1080p.hu.test600.srt'
+            output.write_text(t.format_subtitle(blocks(1)))
+            with patch('subtitleTranslation.openai_translator') as api:
+                result = t.translate_episode_subtitle(episode=25, directory=tmp,
+                    model='gpt-6-sol', batch_size=100, max_batches=6)
+                self.assertEqual(result, output)
+                api.assert_not_called()
+
+    def test_initial_translation_reused_after_complete_save_fails(self):
         class FakeTranslator:
             checkpoint_identity = {'version': 1}
-            fail = True
             calls = 0
             def __call__(self, batch, **kwargs):
                 self.calls += 1
                 return keep_all(batch, **kwargs)
-            def refine_batch(self, batch, result, **kwargs):
-                if self.fail:
-                    raise RuntimeError('review failed')
-                return result, []
+            def refine_batch(self, *args, **kwargs):
+                raise AssertionError('Külön ellenőrzést nem szabad indítani.')
         translator = FakeTranslator()
+        save_batch = t._save_batch
+        def fail_complete(path, *args):
+            if path.name.endswith('.complete.json'):
+                raise OSError('A kész adag mentése megszakadt.')
+            return save_batch(path, *args)
         with tempfile.TemporaryDirectory() as tmp:
             source, destination = Path(tmp) / 'tr.srt', Path(tmp) / 'hu.srt'
             source.write_text(t.format_subtitle(blocks(2)))
-            with self.assertRaises(RuntimeError):
-                t.translate_subtitle(source=source, destination=destination, translator=translator)
-            translator.fail = False
+            with patch('subtitleTranslation._save_batch', side_effect=fail_complete):
+                with self.assertRaises(OSError):
+                    t.translate_subtitle(source=source, destination=destination, translator=translator)
             t.translate_subtitle(source=source, destination=destination, translator=translator)
             self.assertEqual(translator.calls, 1)
 
@@ -206,32 +233,28 @@ class TranslationPipelineTests(unittest.TestCase):
                 t.translate_subtitle(source=source, destination=destination, translator=translator, batch_size=1, checkpoint_key='v1')
             translator.assert_not_called()
 
-    def test_full_pipeline_and_second_run_use_saved_batches(self):
+    def test_full_pipeline_only_translates_and_second_run_uses_saved_batches(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, destination = Path(tmp) / 'tr.srt', Path(tmp) / 'hu.srt'
             original = blocks(3)
             source.write_text(t.format_subtitle(original))
+            # Kihagyások és túl hosszú szöveg mellett sincs új ellenőrző API-hívás.
             initial = [replace(original[0], text='x' * 50)]
-            decisions = {'decisions': [
-                {'source_index': 1, 'action': 'keep', 'reason': 'Elhangzó beszéd.', 'translation': 'Ne menj!'},
-                {'source_index': 2, 'action': 'omit', 'reason': 'Csak zene.', 'translation': ''}]}
-            repaired = [replace(initial[0], text='Maradj!')]
             with patch('requests.post') as post:
-                post.return_value.json.side_effect = [response(t.format_subtitle(initial)),
-                    response(json.dumps(decisions)), response(t.format_subtitle(repaired))]
+                post.return_value.json.return_value = response(t.format_subtitle(initial))
                 t.translate_subtitle(source=source, destination=destination, translator=self.translator())
-                self.assertEqual(post.call_count, 3)
-                self.assertEqual([b.text for b in t.load_subtitle(destination)], ['Maradj!', 'Ne menj!'])
+                self.assertEqual(post.call_count, 1)
+                self.assertEqual(t.load_subtitle(destination), initial)
                 report = json.loads(destination.with_suffix('.review.json').read_text())
-                self.assertEqual([a['action'] for a in report['omission_audits']], ['keep', 'omit'])
-                self.assertEqual(report['readability_warning_blocks'], 0)
+                self.assertEqual(report['omission_audits'], [])
+                self.assertEqual(len(report['omitted_blocks']), 2)
+                self.assertEqual(report['readability_warning_blocks'], 1)
                 destination.unlink()
                 destination.with_suffix('.review.json').unlink()
                 t.translate_subtitle(source=source, destination=destination, translator=self.translator())
-                self.assertEqual(post.call_count, 3)
+                self.assertEqual(post.call_count, 1)
             events = [json.loads(line) for line in destination.with_suffix('.usage.jsonl').read_text().splitlines()]
-            self.assertEqual([e['task'] for e in events if e['event'] == 'api_response'],
-                             ['translate', 'review_omissions', 'repair_readability'])
+            self.assertEqual([e['task'] for e in events if e['event'] == 'api_response'], ['translate'])
             self.assertTrue(any(e.get('checkpoint_reused') for e in events))
 
     def test_failed_entrypoint_logs_elapsed_time_without_raw_error(self):

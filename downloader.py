@@ -9,9 +9,10 @@ A feldolgozás fő lépései:
 4. Elutasítja az üres fájlt, majd FFmpeggel végigdekódolja a videót és a hangot;
    csak sikeres ellenőrzés után jelzi késznek a letöltést.
 
-A main.py a dowloadEpisod() belépési pontot hívja, amely a hibákat kilépési kóddá
-alakítja. A run() Pythonból is használható: a kész fájl útvonalát adja vissza,
-vagy None-t, ha nincs megfelelő epizód; hiba esetén kivételt dob.
+A main.py a run() függvényt hívja exact_episode=True értékkel, és közösen
+naplózza a hibákat. A run() a kész fájl útvonalát adja vissza, vagy None-t,
+ha nincs megfelelő epizód; hiba esetén kivételt dob. A külön használható
+dowloadEpisod() a hibákat kilépési kóddá alakítja.
 Meglévő MP4-et nem ír felül. Telepítés és futtatás: README.md.
 """
 
@@ -167,15 +168,16 @@ def validate_download_directory(directory):
 
 def download_episode(manifest_url, episode, directory):
     directory = validate_download_directory(directory)
+    output = directory / f"Daha17_{episode}_1080p.mp4"
+    if output.exists():
+        print(f"A videó már létezik, letöltés kihagyva: {output}")
+        return validate_video(output)
     executable = shutil.which("yt-dlp")
     if executable is None:
         raise RuntimeError("A yt-dlp nem található. Telepítés: pip install yt-dlp")
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("Az MP4 elkészítéséhez telepíteni kell az FFmpeg programot.")
 
-    output = directory / f"Daha17_{episode}_1080p.mp4"
-    if output.exists():
-        raise FileExistsError(f"A célfájl már létezik: {output}")
     print(f"Letöltés ide: {output}", flush=True)
     try:
         subprocess.run([
@@ -190,14 +192,22 @@ def download_episode(manifest_url, episode, directory):
         ], check=True)
     except subprocess.CalledProcessError as error:
         raise RuntimeError(f"A yt-dlp letöltés sikertelen (kilépési kód: {error.returncode}).") from error
+    return validate_video(output)
+
+
+def validate_video(output):
+    """A meglévő videót sem töltjük újra, de hibás fájllal nem folytatjuk."""
     if not output.is_file():
         raise RuntimeError(f"A letöltés után nem található az MP4: {output}")
     if output.stat().st_size == 0:
         raise RuntimeError(f"A letöltött MP4 üres: {output}")
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("A videó ellenőrzéséhez telepíteni kell az FFmpeg programot.")
     print("Az MP4 épségének ellenőrzése...", flush=True)
     try:
         subprocess.run([
-            shutil.which("ffmpeg"), "-nostdin", "-v", "error", "-xerror",
+            ffmpeg, "-nostdin", "-v", "error", "-xerror",
             "-i", str(output), "-map", "0:v:0", "-map", "0:a?",
             "-f", "null", "-",
         ], check=True, capture_output=True)
@@ -207,16 +217,22 @@ def download_episode(manifest_url, episode, directory):
     return output
 
 
-def run(directory=".", target_episode=TARGET_EPISODE, page_url=URL):
+def run(directory=".", target_episode=TARGET_EPISODE, page_url=URL, *, exact_episode=False):
     if isinstance(target_episode, bool) or not isinstance(target_episode, int) or target_episode < 1:
         raise ValueError("Az epizódszám pozitív egész legyen.")
     directory = validate_download_directory(directory)
+    output = directory / f"Daha17_{target_episode}_1080p.mp4"
+    if output.exists():
+        print(f"A videó már létezik, letöltés kihagyva: {output}")
+        return validate_video(output)
     response = requests.get(page_url, timeout=20)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
     episode = check_episode(soup, target_episode)
     if episode is None:
         return None
+    if exact_episode and episode != target_episode:
+        raise RuntimeError(f"A kért {target_episode}. rész helyett a(z) {episode}. rész érhető el az oldalon.")
     manifest_url = find_manifest(soup, page_url)
     return download_episode(manifest_url, episode, directory)
 

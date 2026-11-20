@@ -31,33 +31,33 @@ Az MP4 elkészítéséhez az `ffmpeg` parancsnak is elérhetőnek kell lennie.
 python3 main.py
 ```
 
-A beállításokat a `main.py` három hívásában add meg:
+A `main.py` sorrendben futtatja a videóletöltést, a török felirat letöltését,
+majd a magyar fordítást. Bármelyik lépés hibájánál azonnal leáll; a következő
+lépés nem indul el. A kért epizódszámot az `episode` változóban állítsd be.
+Pythonból másik mappával is indítható:
 
 ```python
-from downloader import dowloadEpisod
-from downloadSubtitle import download_subtitle
-from subtitleTranslation import translate_episode_subtitle
+from main import run_pipeline
 
-
-if __name__ == "__main__":
-    dowloadEpisod(
-        directory="/home/fedora/Videók",
-        target_episode=25,
-        page_url="https://www.kanald.com.tr/daha-17/bolumler/daha-17-son-bolum",
-    )
-    download_subtitle(episode=25, directory="/home/fedora/Videók")
-    translate_episode_subtitle(
-        episode=25, directory="/home/fedora/Videók",
-        model="gpt-6.2-astra", batch_size=100,
-        start_number=1, context_blocks=10, lookahead_blocks=5,
-        memory_path="series_memory.json", cache_policy="auto",
-    )
+run_pipeline(episode=25, directory="/home/fedora/Videók")
 ```
+
+A sikeres lépések és a leállások a terminálra és a célmappa `pipeline.log`
+fájljába kerülnek, budapesti időponttal (UTC-eltolással), a lépés nevével és az
+okkal. A napló minden indításkor bővül. A kilépési kód siker esetén 0, hibánál 1,
+Ctrl+C megszakításnál 130. A napló nem tartalmaz API-kulcsot.
+
+Meglévő videót és feliratot nem tölt újra. A videót FFmpeggel ellenőrzi, a
+feliratot helyben SRT-ként beolvassa; üres vagy hibás fájllal nem folytatja.
+A felirat először `.srt.part` néven mentődik, és csak sikeres írás után kapja meg
+a végleges nevét. A magyar kimenet meglétekor ellenőrzi a formátumot és kihagyja
+a fordítást; félbeszakadt fordítást a kész adagokból folytat.
 
 A `directory` egy már létező célmappa; a `"."` az aktuális munkamappát jelenti.
 Nem létező útvonal vagy fájl megadása esetén a program még a hálózati
 lekérések előtt hibával leáll; nem hoz létre mappát.
-A `target_episode` a minimálisan várt epizódszám, a `page_url` az epizódoldal címe.
+A külön használt letöltőben a `target_episode` alapból minimumot jelent;
+a főprogram pontos epizódegyezést kér. A `page_url` az epizódoldal címe.
 A fájlnév az oldal tényleges epizódszámát követi, például
 `Daha17_25_1080p.mp4`. Meglévő MP4-et nem ír felül.
 
@@ -69,22 +69,27 @@ Nem kell kézzel kattintani vagy Entert nyomni. A lejátszó betöltése után l
 
 A cím aláírást tartalmaz, ezért később lejárhat. Friss címért futtasd újra a programot.
 
-A feliratletöltés az explicit megadott `episode` részhez tartozó
-`https://engelsiz.kanald.com.tr/daha-17/bolumler/daha-17-<epizódszám>-bolum`
-oldalon megkeresi a `doy<epizódszám>.srt` hivatkozást. A relatív címet feloldja,
-és a török feliratot az MP4 mellé menti, például `Daha17_24_1080p.tr.srt` néven.
-Így a lejátszók a videóhoz társíthatják. Meglévő feliratot nem ír felül.
-Ha nincs felirat vagy hibás a letöltése, ezt jelzi, és `None`-t ad vissza. A felirat tartalmában SRT időzítést is ellenőriz.
-A videó és a felirat letöltését külön a `main.py` hívja meg; a `downloader.py`
-csak a videót kezeli. A felirat epizódszámát külön paraméterként kell megadni.
-A videó minimum epizódszáma és a felirat pontos epizódszáma külön beállítás;
-ha az oldal újabb videót kínál, a felirat továbbra is a megadott részhez készül.
-A felirat hibakezelése a `downloadSubtitle.py`-ban van.
+A feliratletöltés közvetlenül a
+`https://cdn.duhnet.tv/C13/2013kanald/dizi/daha17/doy<epizódszám>.srt`
+címet kéri le. Egyetlen GET kérés ellenőrzi a HTTP-státuszt és tölti le a fájlt.
+A feliratot az MP4 mellé menti, például `Daha17_24_1080p.tr.srt` néven.
+Meglévő feliratot nem ír felül. Ellenőrzi az SRT-formátumot is. Önálló hívásnál
+hibára `None`-t ad; a főprogramnak `raise_errors=True` mellett továbbadja a konkrét hibát.
+A főprogram mindhárom lépéshez ugyanazt az epizódszámot használja. Ha az oldal
+másik részt kínál, nem párosítja azt a kért epizód feliratával, hanem leáll.
+A letöltő külön használt `run()` függvényében a régi minimum-epizódszám viselkedés
+megmaradt; a főprogram `exact_episode=True` értékkel kéri a pontos egyezést.
 
 ## Magyar felirat fordítása
 
 A `subtitleTranslation.py` memóriába tölti a török SRT-t, és 100 forrásblokkos
-adagokat dolgoz fel. A `main.py` továbbra is csak paraméterezett hívásokat tartalmaz.
+adagokat dolgoz fel. A `main.py` a három lépés sorrendjét és a közös leállási naplót kezeli.
+
+A jelenlegi `main.py` teszteléshez `max_batches=6` értéket ad át: csak az első
+600 forrásblokkot dolgozza fel, és `Daha17_25_1080p.hu.test600.srt` néven menti.
+A jelentés csak erre a részletre vonatkozik. A meglévő, azonos modellhez tartozó
+adagokat felhasználja. A teljes fordításhoz töröld a `max_batches=6` sort, vagy
+állítsd `None`-ra; ekkor a már kész adagokból folytatja a teljes feliratot.
 
 A `series_memory.json` tartalmazza a jóváhagyott neveket, beceneveket,
 kapcsolatokat és a 160 szavas, a 24. rész végéig ismert történeti összefoglalót.
@@ -106,26 +111,25 @@ feletti sebesség, a két sornál több és a 42 karakternél hosszabb sor figye
 A sortörések és HTML-formázó tagek nem számítanak látható karakternek. A nem
 pozitív vagy hibás időzítés hibát okoz. A 15–17 CPS irányérték, a jelentés fontosabb.
 
-Az API minden kihagyott forrásblokkot **külön ellenőrzési kérésben** vizsgál meg.
-A megtartandónak ítélt beszédet visszapótolja; a bizonytalan, hiányos vagy hibás
-döntés megállítja az adagot. Ezt követően kizárólag az olvashatósági hibás magyar
-blokkokat küldi vissza egy javítási körre, a környező török–magyar mondatokkal.
-Az ép blokkokat nem fordítja újra. A javítás sem módosíthat sorszámot vagy időzítést.
-A maradó olvashatósági problémák a jelentésben szerepelnek, további automatikus
-javítási kör nincs. A fordítás és a kihagyásellenőrzés is modellválasz, nem emberi
-tartalmi garancia.
+Nincs külön API-s kihagyásellenőrzés vagy olvashatósági javítás. Az API-t csak
+fordításra hívja; a számozást, időzítést és SRT-szerkezetet Python ellenőrzi.
+A modell által kihagyott blokkokat és az olvashatósági figyelmeztetéseket helyben
+listázza, nem pótolja vagy javítja automatikusan újabb modellkéréssel.
 
-A kész `.hu.srt` mellé `.hu.review.json` jelentés kerül a kihagyott török szövegekkel,
-a külön API-audit döntéseivel és minden magyar blokk olvashatósági mérésével.
-A kihagyások továbbra is felülvizsgálhatók; a `semantic_completeness_verified`
-értéke nem válik automatikusan igazzá. Azonos időzítésű több forrásblokk esetén
-a program megáll, mert az SRT-válaszból nem lehetne biztosan párosítani őket.
+A kész `.hu.srt` mellé `.hu.review.json` jelentés kerül a kihagyott török szövegekkel
+és minden magyar blokk olvashatósági mérésével. Az `omission_audits` mezőbe új
+AI-döntések nem kerülnek; régi kész adagokból betöltött döntések megmaradhatnak.
+A `semantic_completeness_verified` értéke hamis: nincs tartalmi garancia.
+Azonos időzítésű több forrásblokk esetén a program megáll, mert az SRT-válaszból
+nem lehetne biztosan párosítani őket.
 
 ### Folytatás mentett adagokból
 
 A `.hu.checkpoints/` könyvtárban atomi JSON-fájlokba menti minden sikeres adag
-kezdeti fordítását és ellenőrzött változatát. A sikeres API-válaszokat is megőrzi,
-így egy későbbi javítási lépés hibája után a korábbi sikeres hívásokat nem ismétli.
+kezdeti fordítását és helyben ellenőrzött kész változatát. A sikeres API-válaszokat
+is megőrzi, így egy későbbi helyi hiba után a korábbi sikeres hívásokat nem ismétli.
+A korábbi, API-val már ellenőrzött kész adagokat is újrahasználja. A fordítási
+promptot és a mentések azonosítását ezért változatlanul hagytuk.
 Az állapot a teljes forráshoz, modellhez, prompthoz, memóriához és az adagolási
 beállításokhoz kötött. Ha ezek változnak, új munkamenet indul; a régi mentés
 megmarad. A mentések tartalomlenyomatát beolvasáskor ellenőrzi.
@@ -137,7 +141,7 @@ Félbeszakadt fordításhoz közvetlenül a fordítást hívd újra azonos param
 from subtitleTranslation import translate_episode_subtitle
 
 translate_episode_subtitle(
-    episode=25, directory=".", model="gpt-6.2-astra",
+    episode=25, directory=".", model="gpt-6-sol",
     batch_size=100, start_number=1, context_blocks=10,
     lookahead_blocks=5, memory_path="series_memory.json", cache_policy="auto",
 )
@@ -165,8 +169,8 @@ export OPENAI_API_KEY
 python3 main.py
 ```
 
-A meglévő `requests` csomagot használja. A fordítás, kihagyásellenőrzés és javítás
-külön díjköteles hívások; a hibátlan, kihagyás nélküli adaghoz csak a fordítás kell.
+A meglévő `requests` csomagot használja. Egy új adaghoz egy fordítási API-hívás
+tartozik. A helyi ellenőrzés és jelentés nem eredményez külön díjköteles hívást.
 Az API megkapja a feliratot és a sorozatmemóriát, `store=False` beállítással.
 
 A `cache_policy="auto"` GPT-5.6 és újabb modelleknél a stabil developer-prefix
@@ -205,15 +209,16 @@ egy rövid helyi tesztvideót állítanak elő; ez a teszt FFmpeg nélkül kimar
 
 ## Fájlok
 
-- `main.py`: videóletöltés, feliratletöltés és fordítás paraméterezett hívásai.
+- `main.py`: a három lépés vezérlése, leállás és időbélyeges naplózás.
 - `downloader.py`: ellenőrzések, Dailymotion FHD cím kinyerése, videóletöltés és hibakezelés.
-- `downloadSubtitle.py`: a török SRT felirat keresése, ellenőrzése és mentése.
+- `downloadSubtitle.py`: a török SRT felirat közvetlen CDN-letöltése.
 - `subtitleTranslation.py`: memóriába olvasás, 100 blokkonkénti API-fordítás és magyar SRT mentése.
 - `series_memory.json`, `seriesMemory.py`: jóváhagyott sorozatháttér és ellenőrzött betöltése.
-- `subtitleApi.py`: API-hívások, cache-beállítás, kihagyásellenőrzés és célzott javítás.
+- `subtitleApi.py`: fordítási API-hívás, cache-beállítás és helyi válaszmentés.
 - `translationStorage.py`: atomi mentés, lenyomatok és mérési napló.
-- `test_translationPipeline.py`: több lépéses fordítás, helyreállítás és költségmentes API-szimuláció tesztjei.
+- `test_translationPipeline.py`: fordítás, helyreállítás és költségmentes API-szimuláció tesztjei.
 - `subtitleQuality.py`: időtartam, olvasási sebesség, sorhossz és kihagyások ellenőrzése.
 - `test_subtitleQuality.py`: olvashatósági mérés és kihagyásjelentés tesztjei.
 - `test_subtitleTranslation.py`: adagolás, fordítási válaszok és API-hibák tesztjei, fizetős hívás nélkül.
 - `test_downloader.py`, `test_downloadSubtitle.py`: videó- és feliratletöltési tesztek.
+- `test_main.py`: sorrend, leállás, naplózás és újraindítás hálózat nélkül.

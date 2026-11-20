@@ -1,5 +1,4 @@
 import subprocess
-import runpy
 import shutil
 import tempfile
 import unittest
@@ -47,27 +46,28 @@ class DownloaderTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'sikertelen'):
                 downloader.download_episode('https://example.com/video.m3u8', 25, tmp)
 
-    def test_existing_mp4_is_not_overwritten(self):
-        with tempfile.TemporaryDirectory() as tmp, patch('downloader.shutil.which', return_value='/usr/bin/tool'), patch('downloader.subprocess.run') as download:
+    def test_existing_mp4_is_checked_without_network_or_downloader(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('downloader.requests.get') as get, patch('downloader.shutil.which', return_value='/usr/bin/ffmpeg'), patch('downloader.subprocess.run') as execute:
+            output = Path(tmp) / 'Daha17_25_1080p.mp4'
+            output.write_bytes(b'video')
+            self.assertEqual(downloader.run(tmp), output)
+            get.assert_not_called()
+            execute.assert_called_once()
+            self.assertEqual(execute.call_args.args[0][0], '/usr/bin/ffmpeg')
+
+    def test_existing_empty_mp4_stops_without_network(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('downloader.requests.get') as get:
             (Path(tmp) / 'Daha17_25_1080p.mp4').touch()
-            with self.assertRaises(FileExistsError):
-                downloader.download_episode('https://example.com/video.m3u8', 25, tmp)
-            download.assert_not_called()
+            with self.assertRaisesRegex(RuntimeError, 'üres'):
+                downloader.run(tmp)
+            get.assert_not_called()
 
-    def test_controller_passes_options(self):
-        with patch('downloader.dowloadEpisod', return_value=Path('/tmp/Daha17_26_1080p.mp4')) as download, patch('downloadSubtitle.download_subtitle') as subtitle, patch('subtitleTranslation.translate_episode_subtitle') as translate:
-            runpy.run_path(str(Path(__file__).with_name('main.py')), run_name='__main__')
-            download.assert_called_once_with(
-                directory='.', target_episode=25, page_url=downloader.URL,
-            )
-            subtitle.assert_called_once_with(episode=25, directory='.')
-            translate.assert_called_once_with(episode=25, directory='.', model='gpt-6.2-astra', batch_size=100, start_number=1, context_blocks=10, lookahead_blocks=5, memory_path='series_memory.json', cache_policy='auto')
-
-    def test_controller_passes_subtitle_episode_even_without_video(self):
-        with patch('downloader.dowloadEpisod', return_value=None), patch('downloadSubtitle.download_subtitle') as subtitle, patch('subtitleTranslation.translate_episode_subtitle') as translate:
-            runpy.run_path(str(Path(__file__).with_name('main.py')), run_name='__main__')
-            subtitle.assert_called_once_with(episode=25, directory='.')
-            translate.assert_called_once_with(episode=25, directory='.', model='gpt-6.2-astra', batch_size=100, start_number=1, context_blocks=10, lookahead_blocks=5, memory_path='series_memory.json', cache_policy='auto')
+    def test_exact_episode_rejects_newer_video_before_download(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('downloader.requests.get') as get, patch('downloader.find_manifest') as manifest:
+            get.return_value.text = '<h1>Daha 17 26. Bölüm</h1>'
+            with self.assertRaisesRegex(RuntimeError, '25.*26'):
+                downloader.run(tmp, target_episode=25, exact_episode=True)
+            manifest.assert_not_called()
 
     def test_older_episode_does_not_start_player_or_download(self):
         with tempfile.TemporaryDirectory() as tmp, patch('downloader.requests.get') as get, patch('downloader.find_manifest') as find:
