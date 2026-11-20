@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "series": "Daha 17",
+  "status": "ready",
+  "names": [
+    "Aras Öztürk",
+    "Teoman Akkaya",
+    "Demir",
+    "Leyla",
+    "Deniz",
+    "Hakan Akkaya",
+    "Şebnem",
+    "Metin",
+    "Uğur",
+    "Serhat Yalçın"
+  ],
+  "nicknames": {
+    "denizkızı": "sellőlány",
+    "civciv": "kis csibe",
+    "Arasko": "Arasko",
+    "Leyloş": "Leyloş",
+    "Teo": "Teo"
+  },
+  "relationships": [
+    {
+      "names": [
+        "Teoman Akkaya",
+        "Demir"
+      ],
+      "relationship": "Ugyanaz a szereplő. Mindig az elhangzó nevet kell megőrizni, nem helyettesíthetők egymással."
+    },
+    {
+      "names": [
+        "Aras Öztürk",
+        "Demir"
+      ],
+      "relationship": "Aras Demir bátyja. Teoman egyelőre nem tudja, hogy Aras a bátyja."
+    },
+    {
+      "names": [
+        "Teoman Akkaya",
+        "Hakan Akkaya",
+        "Şebnem"
+      ],
+      "relationship": "Teoman Hakan és Şebnem családjában él."
+    },
+    {
+      "names": [
+        "Leyla",
+        "Teoman Akkaya"
+      ],
+      "relationship": "Testvérek."
+    },
+    {
+      "names": [
+        "Aras Öztürk",
+        "Leyla"
+      ],
+      "relationship": "Romantikus kapcsolat alakul ki közöttük."
+    },
+    {
+      "names": [
+        "Teoman Akkaya",
+        "Deniz"
+      ],
+      "relationship": "Teoman Denizhez vonzódik, kapcsolatukat ugratás és közeledés jellemzi."
+    },
+    {
+      "names": [
+        "Metin",
+        "Aras Öztürk"
+      ],
+      "relationship": "Metin Aras hűséges barátja."
+    },
+    {
+      "names": [
+        "Deniz",
+        "Aras Öztürk",
+        "Demir"
+      ],
+      "relationship": "Deniz segít Arasnak, és ismeri a testvérek titkát."
+    }
+  ],
+  "story_summary": "Aras Öztürk évek óta keresi gyermekkorában elveszített öccsét, Demirt. Kiderül, hogy Demir Teoman Akkaya néven él Hakan és Şebnem családjában. Teoman egyelőre nem tudja, hogy Aras a bátyja. Leyla Teoman testvére, Aras és Leyla között romantikus kapcsolat alakul ki. Teoman Denizhez vonzódik, kapcsolatukat sok ugratás és közeledés jellemzi. Metin Aras hűséges barátja; Deniz is segít Arasnak és ismeri a testvérek titkát.\n\nHakan meg akarja akadályozni, hogy Aras elvigye Teomant. Uğurral megöleti Serhat Yalçınt, eredetileg Arasra tervezve a gyilkosságot. A szobába azonban Teoman lép be. Uğur emlékezetét befolyásoló szert ad neki, és úgy rendezi el a helyszínt, mintha Teoman lenne a gyilkos.\n\nHakan később kimenti Teomant a tengerből, de halottnak hiteti el a családdal. Aras megtalálja és hazaviszi. Şebnem válni akar. A gyilkosságot végül Arasra próbálják hárítani. Teoman Hakan befolyására csapdába csalja Arast, akit letartóztatnak. Leyla szívritmuszavarral küzd, amely összefügg egy gyermekkori tűzesettel.\n\nA történeti háttér nem jelenti, hogy minden szereplő ismeri ezeket a tényeket. Ne egészítsd ki vele a párbeszédeket.",
+  "notes": "A felhasználó által megadott háttér a 24. rész végéig. A szereplők tudása eltérhet ettől; a párbeszédet nem szabad e tényekkel kiegészíteni. A becenevek maradjanak felismerhetők. Teoman és Demir nevét ne cseréld fel.",
+  "known_through_episode": 24
+}

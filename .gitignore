@@ -1,0 +1,50 @@
+# Titkok és helyi hitelesítő adatok
+.env
+.env.*
+!.env.example
+.aws/
+*.pem
+*.key
+
+# Helyi Python-környezetek és gyorsítótárak
+.venv/
+.venv-*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Csomagoláskor előálló fájlok
+build/
+dist/
+*.egg-info/
+
+# Letöltött videók, feliratok és félkész letöltések
+*.mp4
+*.mkv
+*.webm
+*.part
+*.part-Frag*
+*.ytdl
+Daha17_*.srt
+
+# Fordítási mentések, API-válaszok és jelentések
+*.checkpoints/
+*.usage.jsonl
+*.review.json
+*.log
+
+# Helyi szerkesztő- és rendszerfájlok
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
