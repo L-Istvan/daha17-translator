@@ -1,9 +1,12 @@
 """Videó → török felirat → magyar fordítás → opcionális Videa-feltöltés."""
 
+import argparse
 from datetime import datetime
+import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -54,14 +57,33 @@ def record_status(directory, stage, status, reason):
         print(f"A pipeline.log nem írható: {error}", file=sys.stderr)
 
 
-def run_pipeline(*, episode=25, directory=".", max_batches=6, upload=False):
+def save_latest_upload(directory, episode, url):
+    destination = Path(directory).expanduser() / 'latest_upload.json'
+    data = {'episode': episode, 'url': url}
+    # Az olvasó projekt mindig teljes JSON-t lásson.
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                     dir=destination.parent, delete=False) as file:
+        temporary = Path(file.name)
+        try:
+            json.dump(data, file, ensure_ascii=False, indent=2)
+            file.write('\n')
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def run_pipeline(*, episode=25, directory=".", max_batches=6, upload=False, safe=False):
     stage = "------- 1. Videó ----------"
     try:
         load_dotenv(Path(__file__).resolve().with_name('.env'), override=False)
         if upload and max_batches is not None:
             stage = "4. Videa-feltöltés"
             raise ValueError('A tesztfordítás után nincs automatikus feltöltés. Teljes futáshoz max_batches=None szükséges.')
-        video = download_video(directory=directory, target_episode=episode, exact_episode=True)
+        video = download_video(directory=directory, target_episode=episode, exact_episode=True, safe=safe)
         if video is None:
             raise RuntimeError(f"A(z) {episode}. rész nem elérhető vagy nem azonosítható az oldalon.")
         record_status(directory, stage, "KÉSZ", video)
@@ -99,6 +121,7 @@ def run_pipeline(*, episode=25, directory=".", max_batches=6, upload=False):
                                password=os.getenv('VIDEA_PASSWORD') or None,
                                **session_options)
             attach_subtitle(video, translated, **session_options)
+            save_latest_upload(directory, episode, url)
             record_status(directory, stage, "KÉSZ", url)
     except KeyboardInterrupt:
         record_status(directory, stage, "LEÁLLT", "Felhasználói megszakítás (Ctrl+C).")
@@ -110,4 +133,9 @@ def run_pipeline(*, episode=25, directory=".", max_batches=6, upload=False):
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_pipeline(episode=episode, max_batches=max_batches, upload=upload_to_videa))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("-safe", "--safe", action="store_true",
+                        help="A teljes videó és hang ellenőrzése FFmpeggel.")
+    args = parser.parse_args()
+    raise SystemExit(run_pipeline(episode=episode, max_batches=max_batches,
+                                 upload=upload_to_videa, safe=args.safe))

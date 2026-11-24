@@ -188,12 +188,12 @@ def validate_download_directory(directory):
     return path
 
 
-def download_episode(manifest_url, episode, directory):
+def download_episode(manifest_url, episode, directory, *, safe=True):
     directory = validate_download_directory(directory)
     output = directory / f"Daha17_{episode}_1080p.mp4"
     if output.exists():
         print(f"A videó már létezik, letöltés kihagyva: {output}")
-        return validate_video(output)
+        return validate_video(output, safe=safe)
     executable = shutil.which("yt-dlp")
     if executable is None:
         raise RuntimeError("A yt-dlp nem található. Telepítés: pip install yt-dlp")
@@ -214,15 +214,17 @@ def download_episode(manifest_url, episode, directory):
         ], check=True)
     except subprocess.CalledProcessError as error:
         raise RuntimeError(f"A yt-dlp letöltés sikertelen (kilépési kód: {error.returncode}).") from error
-    return validate_video(output)
+    return validate_video(output, safe=safe)
 
 
-def validate_video(output):
+def validate_video(output, *, safe=True):
     """A meglévő videót sem töltjük újra, de hibás fájllal nem folytatjuk."""
     if not output.is_file():
         raise RuntimeError(f"A letöltés után nem található az MP4: {output}")
     if output.stat().st_size == 0:
         raise RuntimeError(f"A letöltött MP4 üres: {output}")
+    if not safe:
+        return output
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise RuntimeError("A videó ellenőrzéséhez telepíteni kell az FFmpeg programot.")
@@ -239,14 +241,14 @@ def validate_video(output):
     return output
 
 
-def run(directory=".", target_episode=TARGET_EPISODE, page_url=None, *, exact_episode=False):
+def run(directory=".", target_episode=TARGET_EPISODE, page_url=None, *, exact_episode=False, safe=True):
     if isinstance(target_episode, bool) or not isinstance(target_episode, int) or target_episode < 1:
         raise ValueError("Az epizódszám pozitív egész legyen.")
     directory = validate_download_directory(directory)
     output = directory / f"Daha17_{target_episode}_1080p.mp4"
     if output.exists():
         print(f"A videó már létezik, letöltés kihagyva: {output}")
-        return validate_video(output)
+        return validate_video(output, safe=safe)
     if page_url is None:
         page_url = find_episode_page(target_episode) if exact_episode else URL
         if page_url is None:
@@ -260,7 +262,7 @@ def run(directory=".", target_episode=TARGET_EPISODE, page_url=None, *, exact_ep
     if exact_episode and episode != target_episode:
         raise RuntimeError(f"A kért {target_episode}. rész helyett a(z) {episode}. rész érhető el az oldalon.")
     manifest_url = find_manifest(soup, page_url)
-    return download_episode(manifest_url, episode, directory)
+    return download_episode(manifest_url, episode, directory, safe=safe)
 
 
 def dowloadEpisod(*, directory=".", target_episode=TARGET_EPISODE, page_url=URL):

@@ -17,6 +17,12 @@ SRT = '1\n00:00:01,000 --> 00:00:02,000\nMerhaba\n'
 
 
 class PipelineTests(unittest.TestCase):
+    def test_safe_option_is_forwarded_to_downloader(self):
+        for options, expected in (({}, False), ({'safe': True}, True)):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as tmp, patch('main.download_video', return_value=None) as download:
+                self.assertEqual(main.run_pipeline(directory=tmp, **options), 1)
+                self.assertEqual(download.call_args.kwargs['safe'], expected)
+
     def setUp(self):
         # A gép valódi Videa-adatai ne kerülhessenek teszthívásokba/hibaüzenetekbe.
         environment = patch.dict('os.environ', {
@@ -82,7 +88,11 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(main.run_pipeline(directory=tmp), 0)
                 get.assert_not_called()
                 post.assert_not_called()
-                self.assertEqual(execute.call_count, 2)
+                execute.assert_not_called()
+                self.assertEqual(main.run_pipeline(directory=tmp, safe=True), 0)
+                execute.assert_called_once()
+                get.assert_not_called()
+                post.assert_not_called()
 
     def test_unavailable_subtitle_logs_http_error_and_never_translates(self):
         from requests import HTTPError
@@ -130,6 +140,8 @@ class PipelineTests(unittest.TestCase):
                 tags=['Daha 17 25 rész magyar felirattal', 'Daha 17 25 rész', 'Daha 17 25'],
                 headless=True, email=None, password=None, **main.videa_session_options())
             attach.assert_called_once_with('video.mp4', 'hu.srt', **main.videa_session_options())
+            self.assertEqual(json.loads((Path(tmp) / 'latest_upload.json').read_text()),
+                {'episode': 25, 'url': 'https://videa.hu/player?v=abcdefghijkl1234'})
             self.assertIn('4. Videa-feltöltés', (Path(tmp) / 'pipeline.log').read_text())
 
     def test_translation_failure_never_uploads(self):
@@ -146,7 +158,10 @@ class PipelineTests(unittest.TestCase):
 
     def test_subtitle_failure_is_a_fourth_phase_failure_not_success(self):
         with tempfile.TemporaryDirectory() as tmp, patch('main.download_video', return_value='video.mp4'), patch('main.download_subtitle', return_value='tr.srt'), patch('main.translate_episode_subtitle', return_value='hu.srt'), patch('main.upload_video', return_value='https://videa.hu/player?v=abcdefghijkl1234'), patch('main.attach_subtitle', side_effect=RuntimeError('Felirat nem menthető')):
+            latest = Path(tmp) / 'latest_upload.json'
+            latest.write_text('{"episode": 24, "url": "previous"}')
             self.assertEqual(main.run_pipeline(directory=tmp, max_batches=None, upload=True), 1)
+            self.assertEqual(json.loads(latest.read_text()), {'episode': 24, 'url': 'previous'})
             log = (Path(tmp) / 'pipeline.log').read_text()
             self.assertIn('LEÁLLT | 4. Videa-feltöltés', log)
             self.assertIn('Felirat nem menthető', log)

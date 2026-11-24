@@ -21,6 +21,19 @@ A `yt-dlp` is ebből a fájlból települ.
 python3 main.py
 ```
 
+Teljes videó- és hangellenőrzéssel:
+
+```bash
+python3 main.py -safe
+```
+
+A `--safe` ugyanígy használható. Kapcsoló nélkül csak a videófájl meglétét és
+nem üres méretét ellenőrzi; a sérült képkockák és hangsávok észrevétlenek maradhatnak.
+Pythonból a `run_pipeline(..., safe=True)` kapcsolja be a teljes ellenőrzést.
+Mindkét indítás a teljes folyamatot futtatja; a kapcsoló csak az alapos
+videóellenőrzést szabályozza. Az FFmpeg kapcsoló nélkül is szükséges a letöltött
+videó MP4-be csomagolásához.
+
 A `main.py` sorrendben futtatja a videóletöltést, a török felirat letöltését,
 majd a magyar fordítást és az opcionális Videa-feltöltést. Bármelyik lépés hibájánál azonnal leáll; a következő
 lépés nem indul el. A kért epizódszámot az `episode` változóban állítsd be.
@@ -37,7 +50,7 @@ fájljába kerülnek, budapesti időponttal (UTC-eltolással), a lépés nevéve
 okkal. A napló minden indításkor bővül. A kilépési kód siker esetén 0, hibánál 1,
 Ctrl+C megszakításnál 130. A napló nem tartalmaz API-kulcsot.
 
-Meglévő videót és feliratot nem tölt újra. A videót FFmpeggel ellenőrzi, a
+Meglévő videót és feliratot nem tölt újra. A videót `-safe` módban FFmpeggel ellenőrzi, a
 feliratot helyben SRT-ként beolvassa; üres vagy hibás fájllal nem folytatja.
 A felirat először `.srt.part` néven mentődik, és csak sikeres írás után kapja meg
 a végleges nevét. A magyar kimenet meglétekor ellenőrzi a formátumot és kihagyja
@@ -186,9 +199,11 @@ A letöltést a yt-dlp végzi négy párhuzamos szegmenssel (`-N 4`),
 Az MP4-be csomagolás nem kódolja újra a videót. Sikertelen letöltés esetén
 a program hibával lép ki; a részleges fájlok megmaradhatnak a folytatáshoz.
 
-A letöltés után a program elutasítja az üres fájlt, majd FFmpeggel végigolvassa
-és dekódolja a videót és a hangsávokat. Csak sikeres ellenőrzés után jelzi késznek
-a letöltést. Ez nagy fájlnál időbe telhet; a hibás MP4 megmarad, ezért újrapróbálás
+A letöltés után a program elutasítja a hiányzó vagy üres fájlt. A főprogram
+`-safe` kapcsolóval FFmpeggel végigolvassa és dekódolja a videót és a hangsávokat,
+a már meglévő MP4-et is. Ilyenkor csak sikeres ellenőrzés után folytatja a folyamatot.
+A közvetlen `downloader.run()` és `download_episode()` hívások alapból teljes
+ellenőrzést végeznek; ezeknél a `safe=False` kapcsolja ki. Ez nagy fájlnál időbe telhet; a hibás MP4 megmarad, ezért újrapróbálás
 előtt el kell távolítani vagy át kell nevezni.
 
 ## 4. fázis: Videa-feltöltés
@@ -227,6 +242,34 @@ A program nem ad át `force=True` értéket: a duplikálást megelőző ellenőr
 bekapcsolva maradnak.
 A főprogram `headless=True` értékkel indítja a feltöltőt, ezért nem jelenik meg
 böngészőablak. A `videa-uploader login` kézi bejelentkezése továbbra is látható.
+
+### Állandó fájlnév másik projekt számára
+
+Sikeres feltöltés és feliratcsatolás után a célmappában mindig ugyanaz a
+`latest_upload.json` fájl frissül, például:
+
+```json
+{"episode": 25, "url": "https://videa.hu/player?v=abcdefghijkl1234"}
+```
+
+A másik projektnek csak ezt az állandó útvonalat kell ismernie, és az `url`
+mezőt kiolvasnia. Az első sikeres futás előtt a fájl még nem létezik.
+Sikertelen futáskor az előző eredmény megmarad; az `episode` mutatja, melyik
+részhez tartozik. Újraindításkor a már kész feltöltés linkje is kikerül ide.
+A fájl cseréje atomi, így az olvasó nem kap félkész JSON-t.
+A Videa videófeldolgozása a link mentésekor még tarthat.
+Ez a helyi eredményfájl nem kerül Gitbe. Kiolvasás a másik projektben:
+
+```python
+import json
+from pathlib import Path
+
+latest = Path("/a/letoltesi/celmappa/latest_upload.json")
+if latest.is_file():
+    result = json.loads(latest.read_text(encoding="utf-8"))
+    episode = result["episode"]
+    url = result["url"]
+```
 
 ### Bejelentkezés és meglévő munkamenet
 

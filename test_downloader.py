@@ -9,6 +9,26 @@ import downloader
 
 
 class DownloaderTests(unittest.TestCase):
+    def test_fast_mode_checks_files_without_running_ffmpeg(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('downloader.subprocess.run') as execute:
+            output = Path(tmp) / 'Daha17_25_1080p.mp4'
+            with self.assertRaisesRegex(RuntimeError, 'nem található'):
+                downloader.validate_video(output, safe=False)
+            output.touch()
+            with self.assertRaisesRegex(RuntimeError, 'üres'):
+                downloader.run(tmp, safe=False)
+            output.write_bytes(b'video')
+            self.assertEqual(downloader.run(tmp, safe=False), output)
+            execute.assert_not_called()
+
+    def test_fast_mode_download_skips_full_decode(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('downloader.shutil.which', side_effect=lambda name: '/usr/bin/' + name), patch('downloader.subprocess.run') as execute:
+            output = Path(tmp) / 'Daha17_25_1080p.mp4'
+            execute.side_effect = lambda *args, **kwargs: output.write_bytes(b'video')
+            self.assertEqual(downloader.download_episode('https://example.com/video.m3u8', 25, tmp, safe=False), output)
+            execute.assert_called_once()
+            self.assertEqual(execute.call_args.args[0][0], '/usr/bin/yt-dlp')
+
     def test_missing_directory_fails_before_network(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch('downloader.requests.get') as get:
@@ -80,7 +100,7 @@ class DownloaderTests(unittest.TestCase):
             self.assertEqual(downloader.run(tmp, target_episode=25, exact_episode=True), download.return_value)
             self.assertEqual([call.args[0] for call in get.call_args_list], [downloader.EPISODES_URL, archive])
             self.assertEqual(manifest.call_args.args[1], archive)
-            download.assert_called_once_with('https://example.com/video.m3u8', 25, Path(tmp))
+            download.assert_called_once_with('https://example.com/video.m3u8', 25, Path(tmp), safe=True)
 
     def test_exact_latest_episode_uses_its_actual_link(self):
         with tempfile.TemporaryDirectory() as tmp, patch('downloader.requests.get') as get, patch('downloader.find_manifest', return_value='manifest'), patch('downloader.download_episode') as download:
