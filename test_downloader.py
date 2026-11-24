@@ -66,7 +66,34 @@ class DownloaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch('downloader.requests.get') as get, patch('downloader.find_manifest') as manifest:
             get.return_value.text = '<h1>Daha 17 26. Bölüm</h1>'
             with self.assertRaisesRegex(RuntimeError, '25.*26'):
-                downloader.run(tmp, target_episode=25, exact_episode=True)
+                downloader.run(tmp, target_episode=25, page_url=downloader.URL, exact_episode=True)
+            manifest.assert_not_called()
+
+    def test_exact_episode_uses_archived_page_when_latest_episode_is_newer(self):
+        archive = 'https://www.kanald.com.tr/daha-17/bolumler/daha-17-25-bolum'
+        listing = ('<a href="/daha-17/bolumler/daha-17-son-bolum">Daha 17 26. Bölüm</a>'
+                   '<a href="/daha-17/bolumler/daha-17-25-bolum">Daha 17 25. Bölüm</a>')
+        with tempfile.TemporaryDirectory() as tmp, patch('downloader.requests.get') as get, patch('downloader.find_manifest', return_value='https://example.com/video.m3u8') as manifest, patch('downloader.download_episode', return_value=Path(tmp) / 'video.mp4') as download:
+            pages = {downloader.EPISODES_URL: listing, archive: '<h1>Daha 17 25. Bölüm</h1>',
+                     downloader.URL: '<h1>Daha 17 26. Bölüm</h1>'}
+            get.side_effect = lambda url, **kwargs: MagicMock(text=pages[url])
+            self.assertEqual(downloader.run(tmp, target_episode=25, exact_episode=True), download.return_value)
+            self.assertEqual([call.args[0] for call in get.call_args_list], [downloader.EPISODES_URL, archive])
+            self.assertEqual(manifest.call_args.args[1], archive)
+            download.assert_called_once_with('https://example.com/video.m3u8', 25, Path(tmp))
+
+    def test_exact_latest_episode_uses_its_actual_link(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('downloader.requests.get') as get, patch('downloader.find_manifest', return_value='manifest'), patch('downloader.download_episode') as download:
+            get.side_effect = [MagicMock(text='<a href="/daha-17/bolumler/daha-17-son-bolum"><img alt="Daha 17 26. Bölüm"></a>'), MagicMock(text='<h1>Daha 17 26. Bölüm</h1>')]
+            downloader.run(tmp, target_episode=26, exact_episode=True)
+            self.assertEqual(get.call_args.args[0], downloader.URL)
+            self.assertEqual(download.call_args.args[1], 26)
+
+    def test_missing_episode_in_listing_stops_before_manifest_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('downloader.requests.get') as get, patch('downloader.find_manifest') as manifest:
+            get.return_value.text = '<a href="/daha-17/bolumler/daha-17-son-bolum">Daha 17 26. Bölüm</a>'
+            self.assertIsNone(downloader.run(tmp, target_episode=27, exact_episode=True))
+            get.assert_called_once_with(downloader.EPISODES_URL, timeout=20)
             manifest.assert_not_called()
 
     def test_older_episode_does_not_start_player_or_download(self):

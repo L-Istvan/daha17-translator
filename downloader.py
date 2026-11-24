@@ -29,6 +29,28 @@ from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 URL = "https://www.kanald.com.tr/daha-17/bolumler/daha-17-son-bolum"
 TARGET_EPISODE = 25
+EPISODES_URL = "https://www.kanald.com.tr/daha-17/bolumler"
+
+
+def find_episode_page(target_episode):
+    """A kért részt az oldal tényleges epizódlinkjei közül választja ki."""
+    response = requests.get(EPISODES_URL, timeout=20)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    title = rf"Daha\s*17\s+{target_episode}\.\s*Bölüm\b"
+    if target_episode == 1:
+        title = rf"(?:{title}|Daha\s*17\s+İlk\s+Bölüm\b)"
+    for link in soup.find_all("a", href=True):
+        label = " ".join([link.get_text(" ", strip=True), link.get("title", ""),
+                          link.get("aria-label", ""),
+                          *(image.get("alt", "") for image in link.find_all("img"))])
+        url = urljoin(EPISODES_URL, link["href"])
+        parsed = urlparse(url)
+        if (parsed.hostname in ("www.kanald.com.tr", "kanald.com.tr")
+                and parsed.path.startswith("/daha-17/bolumler/") and re.search(title, label, re.I)):
+            return url
+    print(f"A(z) {target_episode}. rész nem található az epizódlistában.")
+    return None
 
 
 def check_episode(soup, target_episode=TARGET_EPISODE):
@@ -217,7 +239,7 @@ def validate_video(output):
     return output
 
 
-def run(directory=".", target_episode=TARGET_EPISODE, page_url=URL, *, exact_episode=False):
+def run(directory=".", target_episode=TARGET_EPISODE, page_url=None, *, exact_episode=False):
     if isinstance(target_episode, bool) or not isinstance(target_episode, int) or target_episode < 1:
         raise ValueError("Az epizódszám pozitív egész legyen.")
     directory = validate_download_directory(directory)
@@ -225,6 +247,10 @@ def run(directory=".", target_episode=TARGET_EPISODE, page_url=URL, *, exact_epi
     if output.exists():
         print(f"A videó már létezik, letöltés kihagyva: {output}")
         return validate_video(output)
+    if page_url is None:
+        page_url = find_episode_page(target_episode) if exact_episode else URL
+        if page_url is None:
+            return None
     response = requests.get(page_url, timeout=20)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
