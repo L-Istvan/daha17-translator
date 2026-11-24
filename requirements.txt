@@ -1,0 +1,7 @@
+requests
+beautifulsoup4
+python-dotenv
+playwright
+yt-dlp
+# A feltöltő tags API-t támogató, ellenőrzött GitHub-commitja.
+videa-uploader @ git+https://github.com/L-Istvan/videa-uploader.git@8852220382c9aa2cdb816c1e4703014dd4a2c7d5

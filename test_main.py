@@ -1,18 +1,30 @@
 """A három fő lépés sorrendje, leállása és újraindítása, hálózat nélkül."""
 
 from contextlib import ExitStack
+import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import main
+import videa_uploader
+from translationStorage import digest
 
 
 SRT = '1\n00:00:01,000 --> 00:00:02,000\nMerhaba\n'
 
 
 class PipelineTests(unittest.TestCase):
+    def setUp(self):
+        # A gép valódi Videa-adatai ne kerülhessenek teszthívásokba/hibaüzenetekbe.
+        environment = patch.dict('os.environ', {
+            'VIDEA_EMAIL': '', 'VIDEA_PASSWORD': '', 'VIDEA_SESSION_PATH': '',
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_steps_run_in_order_with_same_episode_and_test_limit(self):
         with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
             calls = []
@@ -26,6 +38,7 @@ class PipelineTests(unittest.TestCase):
                 ['download_video', 'download_subtitle', 'translate_episode_subtitle'])
             self.assertEqual(calls[0][1]['target_episode'], 25)
             self.assertTrue(calls[0][1]['exact_episode'])
+            self.assertNotIn('page_url', calls[0][1])  # A letöltő az adott rész saját linkjét keresi ki.
             self.assertEqual(calls[1][1]['episode'], 25)
             self.assertEqual(calls[2][1]['episode'], 25)
             self.assertEqual(calls[2][1]['max_batches'], 6)
@@ -112,8 +125,11 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch('main.download_video', return_value='video.mp4'), patch('main.download_subtitle', return_value='tr.srt'), patch('main.translate_episode_subtitle', return_value='hu.srt') as translate, patch('main.upload_video', return_value='https://videa.hu/player?v=abcdefghijkl1234') as upload, patch('main.attach_subtitle') as attach:
             self.assertEqual(main.run_pipeline(directory=tmp, max_batches=None, upload=True), 0)
             self.assertIsNone(translate.call_args.kwargs['max_batches'])
-            upload.assert_called_once_with('video.mp4', title='Daha 17 – 25. rész')
-            attach.assert_called_once_with('video.mp4', 'hu.srt')
+            upload.assert_called_once_with('video.mp4', title='Daha 17 25 rész magyar felirattal',
+                description='Daha 17 25 rész magyar felirattal. Török sorozat magyar feliratos epizódja.\n\nMagyar felirat: AI segítségével fordítva.',
+                tags=['Daha 17 25 rész magyar felirattal', 'Daha 17 25 rész', 'Daha 17 25'],
+                headless=True, email=None, password=None, **main.videa_session_options())
+            attach.assert_called_once_with('video.mp4', 'hu.srt', **main.videa_session_options())
             self.assertIn('4. Videa-feltöltés', (Path(tmp) / 'pipeline.log').read_text())
 
     def test_translation_failure_never_uploads(self):
@@ -134,3 +150,82 @@ class PipelineTests(unittest.TestCase):
             log = (Path(tmp) / 'pipeline.log').read_text()
             self.assertIn('LEÁLLT | 4. Videa-feltöltés', log)
             self.assertIn('Felirat nem menthető', log)
+
+    def test_explicit_session_overrides_legacy_session(self):
+        with patch.dict('os.environ', {'VIDEA_SESSION_PATH': '/tmp/explicit-session.json'}):
+            self.assertEqual(main.videa_session_options(), {'session_path': Path('/tmp/explicit-session.json')})
+
+    def test_existing_project_session_is_reused(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', {'XDG_CONFIG_HOME': str(Path(tmp) / 'config')}), patch('main.__file__', str(Path(tmp) / 'main.py')):
+            legacy = Path(tmp) / '.videa-session.json'
+            legacy.write_text('{}')
+            self.assertEqual(main.videa_session_options(), {'session_path': legacy})
+
+    def test_without_legacy_session_package_uses_its_default(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', {'XDG_CONFIG_HOME': tmp}), patch('main.__file__', str(Path(tmp) / 'main.py')):
+            self.assertEqual(main.videa_session_options(), {'session_path': Path(tmp) / 'videa-uploader/session.json'})
+
+    def test_newest_session_wins_and_default_wins_ties(self):
+        for legacy_time, default_time, expected in ((100, 200, 'default'), (200, 100, 'legacy'), (100, 100, 'default')):
+            with self.subTest(legacy=legacy_time, default=default_time), tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', {'XDG_CONFIG_HOME': str(Path(tmp) / 'config')}), patch('main.__file__', str(Path(tmp) / 'main.py')):
+                legacy = Path(tmp) / '.videa-session.json'
+                default = Path(tmp) / 'config/videa-uploader/session.json'
+                default.parent.mkdir(parents=True)
+                legacy.write_text('{}')
+                default.write_text('{}')
+                os.utime(legacy, (legacy_time, legacy_time))
+                os.utime(default, (default_time, default_time))
+                self.assertEqual(main.videa_session_options(), {'session_path': default if expected == 'default' else legacy})
+
+    def test_fresh_cli_session_is_passed_to_both_upload_and_subtitle(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', {'XDG_CONFIG_HOME': str(Path(tmp) / 'config')}), patch('main.__file__', str(Path(tmp) / 'main.py')):
+            legacy = Path(tmp) / '.videa-session.json'
+            default = Path(tmp) / 'config/videa-uploader/session.json'
+            default.parent.mkdir(parents=True)
+            legacy.write_text('{}')
+            default.write_text('{}')
+            os.utime(legacy, (100, 100))
+            os.utime(default, (200, 200))
+            with patch('main.download_video', return_value='video.mp4'), patch('main.download_subtitle', return_value='tr.srt'), patch('main.translate_episode_subtitle', return_value='hu.srt'), patch('main.upload_video', return_value='https://videa.hu/player?v=abcdefghijkl1234') as upload, patch('main.attach_subtitle') as attach:
+                self.assertEqual(main.run_pipeline(directory=tmp, max_batches=None, upload=True), 0)
+                self.assertEqual(upload.call_args.kwargs['session_path'], default)
+                self.assertEqual(attach.call_args.kwargs['session_path'], default)
+            log = (Path(tmp) / 'pipeline.log').read_text()
+            self.assertIn(f'Belépési munkamenet: {default}', log)
+
+    def test_environment_credentials_are_explicitly_passed_only_to_upload(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', {
+            'VIDEA_EMAIL': 'test@example.com', 'VIDEA_PASSWORD': 'test-only-password',
+            'VIDEA_SESSION_PATH': '/tmp/explicit-session.json',
+        }), patch('main.download_video', return_value='video.mp4'), patch('main.download_subtitle', return_value='tr.srt'), patch('main.translate_episode_subtitle', return_value='hu.srt'), patch('main.upload_video', return_value='https://videa.hu/player?v=abcdefghijkl1234') as upload, patch('main.attach_subtitle') as attach:
+            self.assertEqual(main.run_pipeline(episode=26, directory=tmp, max_batches=None, upload=True), 0)
+            upload.assert_called_once_with('video.mp4', title='Daha 17 26 rész magyar felirattal',
+                description='Daha 17 26 rész magyar felirattal. Török sorozat magyar feliratos epizódja.\n\nMagyar felirat: AI segítségével fordítva.',
+                tags=['Daha 17 26 rész magyar felirattal', 'Daha 17 26 rész', 'Daha 17 26'],
+                headless=True, email='test@example.com', password='test-only-password',
+                session_path=Path('/tmp/explicit-session.json'))
+            self.assertNotIn('force', upload.call_args.kwargs)
+            attach.assert_called_once_with('video.mp4', 'hu.srt', session_path=Path('/tmp/explicit-session.json'))
+
+    def test_external_package_reuses_existing_video_and_subtitle_receipts_offline(self):
+        self.assertIs(main.upload_video, videa_uploader.upload_video)
+        self.assertIs(main.attach_subtitle, videa_uploader.attach_subtitle)
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / 'Daha17_25_1080p.mp4'
+            subtitle = Path(tmp) / 'Daha17_25_1080p.hu.srt'
+            video.write_bytes(b'video')
+            subtitle.write_text(SRT)
+            stat = video.stat()
+            state = {'file': {'path': str(video), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns},
+                     'status': 'complete', 'vcode': 'abcdefghijkl1234',
+                     'url': 'https://videa.hu/player?v=abcdefghijkl1234',
+                     'subtitles': {'Magyar': {'hash': digest({'name': 'Magyar', 'srt': SRT}),
+                         'status': 'complete', 'st_id': 123}}}
+            receipt = video.with_suffix('.videa.json')
+            receipt.write_text(json.dumps(state))
+            original_receipt = receipt.read_bytes()
+            with patch('main.download_video', return_value=video), patch('main.download_subtitle', return_value=Path(tmp) / 'tr.srt'), patch('main.translate_episode_subtitle', return_value=subtitle), patch('videa_uploader.upload.sync_playwright', side_effect=AssertionError('Nem szabad új videót feltölteni.')) as browser, patch('videa_uploader.subtitles.sync_playwright', side_effect=AssertionError('Nem szabad új feliratot csatolni.')) as api:
+                self.assertEqual(main.run_pipeline(directory=tmp, max_batches=None, upload=True), 0)
+                browser.assert_not_called()
+                api.assert_not_called()
+            self.assertEqual(receipt.read_bytes(), original_receipt)

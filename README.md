@@ -1,29 +1,19 @@
- # Telepítés
+# Telepítés
 
-1. Virtuális környezet létrehozása
-```python3 -m venv .venv```
+Python 3.10 vagy újabb, Git, valamint FFmpeg/ffprobe szükséges.
 
-2. Virtuális környezet aktiválása
-```source .venv/bin/activate```
-
-3. Könyvtárak telepítése
-```pip install requests beautifulsoup4 python-dotenv```
-A szükséges Python-könyvtárakat telepíti:
-- requests: weboldalak lekérése HTTP-n keresztül.
-- beautifulsoup4: HTML-oldalak feldolgozása, például címek keresése.
-- python-dotenv: a helyi `.env` fájl betöltése.
-
-4. Playwright és a háttérben futó Chromium telepítése
 ```bash
-pip install playwright
-python3 -m playwright install chromium
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
-5. Letöltő telepítése
-```bash
-pip install yt-dlp
-```
-Az MP4 elkészítéséhez az `ffmpeg` parancsnak is elérhetőnek kell lennie.
+A `requirements.txt` a letöltő és fordító Python-függőségei mellett a külön
+[**videa-uploader**](https://github.com/L-Istvan/videa-uploader) csomagot is
+telepíti GitHubról. A feltöltő egy ellenőrzött teljes commitazonosítóhoz van kötve;
+nem a szomszédos munkamappát és nem egy helyi feltöltőkód-másolatot használja.
+A `yt-dlp` is ebből a fájlból települ.
 
 ## Futtatás
 
@@ -57,7 +47,10 @@ A `directory` egy már létező célmappa; a `"."` az aktuális munkamappát jel
 Nem létező útvonal vagy fájl megadása esetén a program még a hálózati
 lekérések előtt hibával leáll; nem hoz létre mappát.
 A külön használt letöltőben a `target_episode` alapból minimumot jelent;
-a főprogram pontos epizódegyezést kér. A `page_url` az epizódoldal címe.
+a főprogram pontos epizódegyezést kér. Az `episode` alapján az epizódlistából
+választja ki a tényleges oldalt: a 25. részhez a 25. rész archivált oldalát,
+a legújabbhoz annak aktuális linkjét. Így egy új rész megjelenése nem akadályozza
+a korábbi rész új letöltését. A `page_url` külön hívásnál explicit felülbírálás.
 A fájlnév az oldal tényleges epizódszámát követi, például
 `Daha17_25_1080p.mp4`. Meglévő MP4-et nem ír felül.
 
@@ -200,79 +193,91 @@ előtt el kell távolítani vagy át kell nevezni.
 
 ## 4. fázis: Videa-feltöltés
 
-A `uploadVidea.py` az eredeti MP4-et tölti fel Playwrighttal. Utána a főprogram
-a `videaSubtitles.py` segítségével külön „Magyar” feliratként csatolja a harmadik
-fázisban készített SRT-t. A feliratot nem égeti rá a videóra. A tesztkorlát
-(`max_batches`) és a feltöltés (`upload_to_videa`) a `main.py` elején állítható;
-bekapcsolt feltöltéshez teljes fordítás szükséges (`max_batches = None`).
+A főprogram a külön [videa-uploader](https://github.com/L-Istvan/videa-uploader)
+csomag nyilvános Python-függvényeit hívja:
 
-Elsőként mentsd el a bejelentkezést egy látható böngészőben:
-
-```bash
-python3 uploadVidea.py --login
+```python
+from videa_uploader import upload_video, attach_subtitle
 ```
 
-Ez csak bejelentkezik, fájlt nem választ ki és nem tölt fel. A munkamenet a
-Gitből kizárt, csak a tulajdonos számára olvasható `.videa-session.json` fájlba
-kerül. Lejárt munkamenetnél ismételd meg. Alternatívaként a `.env` fájlban
-`VIDEA_EMAIL` és `VIDEA_PASSWORD` adható meg; valódi adatokat ne írj a kódba.
-CAPTCHA vagy egyéb kézi belépési lépés esetén használd a `--login` módot.
+A feltöltés és a feliratcsatolás megvalósítása, valamint ezek saját tesztjei
+kizárólag a külön repóban vannak. Ebben a projektben a lépések sorrendje,
+a beállítások átadása és az eredmények naplózása maradt.
 
-A teljes folyamat és a feltöltés engedélyezéséhez a `main.py` elején:
+A negyedik fázis előbb feltölti az eredeti MP4-et, majd külön „Magyar”
+feliratként csatolja a harmadik fázis kész SRT-jét. A felirat nincs ráégetve.
+A `main.py` elején kapcsolható be a teljes folyamat:
 
 ```python
 max_batches = None
 upload_to_videa = True
 ```
 
-Ekkor csak sikeres teljes fordítás után indul a negyedik lépés. A cím
-`Daha 17 – <epizódszám>. rész`, a leírás alapból üres. A tartalomtípus a normál
-Videa (`0`), a kategóriát `film/animáció` név alapján választja. A rögzített
-próbakód `1` és `16` értékei VideaKid/Animáció feltöltést eredményeznének.
-A felület többi
-alapértéke, köztük a láthatóság, megmarad. A feltételek jelölőnégyzetét a
-rögzített folyamatnak megfelelően elfogadja, a fizetett promóciót „nem”-re állítja.
+Az új feltöltés címe, leírása és címkéi mindig a beállított epizódszámból készülnek.
+Például a 25. résznél:
 
-A feltöltő önállóan is meghívható; **ez tényleges feltöltést és adatlapmentést végez**:
+- Cím: `Daha 17 25 rész magyar felirattal`
+- Leírás: `Daha 17 25 rész magyar felirattal. Török sorozat magyar feliratos epizódja.`
+  Üres sor után: `Magyar felirat: AI segítségével fordítva.`
+- Címkék: `Daha 17 25 rész magyar felirattal`, `Daha 17 25 rész`, `Daha 17 25`.
+
+A már kész feltöltés adatlapját az újraindítás nem írja át. A feltöltő normál Videát használ,
+`film/animáció` kategóriával; a további részleteket a csomag README-je írja le.
+A program nem ad át `force=True` értéket: a duplikálást megelőző ellenőrzések
+bekapcsolva maradnak.
+A főprogram `headless=True` értékkel indítja a feltöltőt, ezért nem jelenik meg
+böngészőablak. A `videa-uploader login` kézi bejelentkezése továbbra is látható.
+
+### Bejelentkezés és meglévő munkamenet
+
+Új telepítésnél:
 
 ```bash
-python3 uploadVidea.py --video sajat_tesztvideo.mp4 --title "Teszt" --description "Tesztfeltöltés"
+videa-uploader login
 ```
 
-Már feltöltött videóhoz csak a magyar SRT is csatolható, új MP4-átvitel nélkül:
+Ez csak kézi bejelentkezést és munkamenetmentést végez. A csomag alapértelmezett
+helye `~/.config/videa-uploader/session.json` (`XDG_CONFIG_HOME` figyelembevételével).
+
+Az átállás a korábbi projektbeli `.videa-session.json` fájlt is felismeri.
+Ha mindkét helyen van mentés, a legutóbb mentettet használja, egyező időpontnál
+a csomag alapértelmezettjét. Így a `videa-uploader login` friss belépését nem
+árnyékolja be a korábbi helyi fájl. A kiválasztott útvonal a negyedik fázis
+indulásakor megjelenik a terminálon és a `pipeline.log` fájlban.
+Kifejezetten a régi helyi mentés frissítéséhez:
 
 ```bash
-python3 videaSubtitles.py Daha17_25_1080p.mp4 Daha17_25_1080p.hu.srt
+videa-uploader --session "$PWD/.videa-session.json" login
 ```
 
-A parancs a videó melletti `.videa.json` mentésből veszi a videóazonosítót.
-A helyi és a Videa szerveres SRT-ellenőrzése után menti a feliratot. A sikeres
-feliratazonosítót és a feliratszöveg lenyomatát is megőrzi: ugyanazt a feliratot
-nem csatolja ismét. Eltérő vagy bizonytalan korábbi feliratmentésnél megáll;
-nem ír felül és nem hoz létre automatikusan második „Magyar” feliratot.
-Ehhez a Videa saját felületének `validateVideoSubtitleByRequest` és
-`addVideoSubtitleByRequest` kéréseit használja a mentett bejelentkezéssel;
-OpenAI API-hívást és videófeltöltést nem indít.
+A `.env` fájlban a `VIDEA_SESSION_PATH` felülbírálhatja a munkamenet helyét.
+A kiválasztás sorrendje: explicit `VIDEA_SESSION_PATH`, a két ismert hely közül
+a legfrissebb meglévő mentés, végül a csomag alapértelmezett helye. A videóhoz és a
+felirathoz ugyanazt a munkamenetet adja át. A bejelentkezési fájlokat nem másolja.
 
-Alapból látható böngészőt használ. A `--headless` elrejti, a `--timeout 7200`
-a fájlátvitel felső időkorlátja másodpercben. A méret- és időkorlátokat a
-bejelentkezett fiók tényleges feltöltőoldalából olvassa ki. Nagy fájlnál az
-időtartamot `ffprobe` segítségével ellenőrzi.
+A főprogram betölti a projekt `.env` fájlját, és az opcionális `VIDEA_EMAIL`,
+`VIDEA_PASSWORD` értékeket kifejezetten átadja a feltöltőnek. A könyvtár önmagában
+nem tölti be ennek a projektnek a beállításait. Valódi adatot ne írj a forráskódba.
 
-A fájlátvitel szerveres visszaigazolását és az adatlap mentését külön várja meg.
-A visszaigazolások értelmezése a Videa [nyilvános feltöltőkódjára](https://videa.hu/static/uis/redesign/js/pages/upload.js)
-épül. Ha a böngésző nem tudja átvenni a mentési választ, kizárólag olvasással
-ellenőrzi a konkrét videóazonosítót a saját videólistában. Csak a megtalált
-hivatkozás alapján jelöl sikert; a mentést és a fájlátvitelt nem ismétli meg.
-A sikeres mentés nem jelenti azt, hogy a Videa videókonvertálása is véget ért.
-Az éles, bejelentkezett feltöltési folyamatot még ellenőrizni kell; a tesztek
-nem publikálnak videót.
+### Mentések és önálló parancsok
 
-A videó melletti `.videa.json` fájlban megmarad az állapot és a kapott hivatkozás.
-Sikeres korábbi feltöltésnél nem küldi újra a fájlt. Félbeszakadt vagy bizonytalan
-kísérletnél leáll: először ellenőrizd a saját Videa-videólistádat, és csak azután
-töröld vagy egyeztesd a mentést. Ezzel elkerülhető a duplikált publikálás.
-A negyedik lépés eredménye és hibája is a közös `pipeline.log` fájlba kerül.
+A videó melletti meglévő `.videa.json` mentések használhatók maradnak. Kész
+videót és azonos, már csatolt feliratot nem küld újra. Bizonytalan korábbi
+kísérletnél leáll, és ellenőrzést kér; nem készít automatikusan másolatot.
+A negyedik fázis eredménye és hibája továbbra is a `pipeline.log` fájlba kerül.
+
+A csomag önálló parancsai is használhatók. Az első **valódi feltöltést végez**,
+a második csak egy már feltöltött videóhoz csatolja az SRT-t:
+
+```bash
+videa-uploader upload sajat_tesztvideo.mp4 --title "Teszt" --subtitle magyar.srt
+videa-uploader subtitle Daha17_25_1080p.mp4 Daha17_25_1080p.hu.srt --name "Magyar"
+```
+
+Ha a régi helyi munkamenetet használod, a parancs elé a fenti `--session` opciót
+is add meg. A csomag frissítéséhez a `requirements.txt` Videa-hivatkozásában
+rögzített commitot kell tudatosan frissíteni és az új függőséget telepíteni;
+a Videa-repóba történő push önmagában nem módosítja a telepített verziót.
 
 ## Tesztek
 
@@ -298,7 +303,4 @@ egy rövid helyi tesztvideót állítanak elő; ez a teszt FFmpeg nélkül kimar
 - `test_subtitleTranslation.py`: adagolás, fordítási válaszok és API-hibák tesztjei, fizetős hívás nélkül.
 - `test_downloader.py`, `test_downloadSubtitle.py`: videó- és feliratletöltési tesztek.
 - `test_main.py`: sorrend, leállás, naplózás és újraindítás hálózat nélkül.
-- `uploadVidea.py`: böngészős Videa-belépés, feltöltés és állapotmentés.
-- `test_uploadVidea.py`: feltöltés és duplikálás elleni védelem hamis böngészővel.
-- `videaSubtitles.py`: SRT csatolása meglévő videóhoz, külön MP4-átvitel nélkül.
-- `test_videaSubtitles.py`: feliratmentés, hiba és újraindítás hálózat nélküli tesztjei.
+- `requirements.txt`: Python-függőségek és a külön Videa-csomag rögzített GitHub-verziója.

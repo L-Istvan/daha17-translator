@@ -7,6 +7,7 @@
 *.key
 .videa-session.json
 *.videa.json
+*.videa.backup-*.json
 
 # Helyi Python-környezetek és gyorsítótárak
 .venv/

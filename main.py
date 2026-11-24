@@ -1,19 +1,45 @@
 """Videó → török felirat → magyar fordítás → opcionális Videa-feltöltés."""
 
 from datetime import datetime
+import os
 from pathlib import Path
 import sys
 from zoneinfo import ZoneInfo
 
-from downloader import run as download_video, URL
+from dotenv import load_dotenv
+from videa_uploader import upload_video, attach_subtitle
+
+from downloader import run as download_video
 from downloadSubtitle import download_subtitle
 from subtitleTranslation import translate_episode_subtitle
-from uploadVidea import upload_video
-from videaSubtitles import attach_subtitle
 
 episode = 25
 max_batches = None
 upload_to_videa = True
+
+
+def videa_metadata(episode):
+    title = f'Daha 17 {episode} rész magyar felirattal'
+    return {
+        'title': title,
+        'description': (f'{title}. Török sorozat magyar feliratos epizódja.\n\n'
+                        'Magyar felirat: AI segítségével fordítva.'),
+        'tags': [title, f'Daha 17 {episode} rész', f'Daha 17 {episode}'],
+    }
+
+
+def videa_session_options():
+    configured = os.getenv('VIDEA_SESSION_PATH')
+    if configured:
+        return {'session_path': Path(configured).expanduser()}
+    legacy = Path(__file__).resolve().with_name('.videa-session.json')
+    config_home = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')).expanduser()
+    default = config_home / 'videa-uploader' / 'session.json'
+    # A CLI és a korábbi alkalmazás is menthet munkamenetet. A régi fájl puszta
+    # jelenléte nem írhatja felül a videa-uploader login friss mentését.
+    candidates = [path for path in (default, legacy) if path.is_file()]
+    selected = max(candidates, key=lambda path: path.stat().st_mtime_ns) if candidates else default
+    return {'session_path': selected}
 
 
 def record_status(directory, stage, status, reason):
@@ -31,11 +57,11 @@ def record_status(directory, stage, status, reason):
 def run_pipeline(*, episode=25, directory=".", max_batches=6, upload=False):
     stage = "------- 1. Videó ----------"
     try:
+        load_dotenv(Path(__file__).resolve().with_name('.env'), override=False)
         if upload and max_batches is not None:
             stage = "4. Videa-feltöltés"
             raise ValueError('A tesztfordítás után nincs automatikus feltöltés. Teljes futáshoz max_batches=None szükséges.')
-        video = download_video(directory=directory, target_episode=episode,
-                               page_url=URL, exact_episode=True)
+        video = download_video(directory=directory, target_episode=episode, exact_episode=True)
         if video is None:
             raise RuntimeError(f"A(z) {episode}. rész nem elérhető vagy nem azonosítható az oldalon.")
         record_status(directory, stage, "KÉSZ", video)
@@ -65,8 +91,14 @@ def run_pipeline(*, episode=25, directory=".", max_batches=6, upload=False):
         record_status(directory, stage, "KÉSZ", translated)
         if upload:
             stage = "4. Videa-feltöltés"
-            url = upload_video(video, title=f"Daha 17 – {episode}. rész")
-            attach_subtitle(video, translated)
+            session_options = videa_session_options()
+            record_status(directory, stage, "INDUL", f'Belépési munkamenet: {session_options["session_path"]}')
+            url = upload_video(video, **videa_metadata(episode),
+                               headless=True,
+                               email=os.getenv('VIDEA_EMAIL') or None,
+                               password=os.getenv('VIDEA_PASSWORD') or None,
+                               **session_options)
+            attach_subtitle(video, translated, **session_options)
             record_status(directory, stage, "KÉSZ", url)
     except KeyboardInterrupt:
         record_status(directory, stage, "LEÁLLT", "Felhasználói megszakítás (Ctrl+C).")
